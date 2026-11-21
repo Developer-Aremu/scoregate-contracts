@@ -5,6 +5,7 @@ import json
 import argparse
 import time
 import tempfile
+import hashlib
 
 EXIT_SUCCESS = 0
 EXIT_INVALID_ARGS = 1
@@ -18,6 +19,7 @@ MAX_ITEMS = 5000
 MAX_INVARIANTS_PER_ISSUE = 200
 MAX_TESTS_PER_INVARIANT = 200
 SUPPORTED_INPUT_VERSIONS = {"1.0.0"}
+CHECKPOINT_FORMAT_VERSION = 2
 
 
 def parse_args():
@@ -118,6 +120,31 @@ def validate_input_file(path):
     return data
 
 
+def compute_input_fingerprint(data):
+    """Deterministic fingerprint of the normalized input.
+
+    Normalizes ordering (issues by issue_id, invariants by invariant_id,
+    test_ids sorted) so semantically identical input yields the same
+    fingerprint, while any change to invariant IDs or test references
+    produces a different fingerprint.
+    """
+    normalized = []
+    for item in sorted(data, key=lambda x: x["issue_id"]):
+        invariants = []
+        for inv in sorted(item.get("invariants", []), key=lambda x: x["invariant_id"]):
+            test_ids = sorted(str(t) for t in inv.get("test_ids", []))
+            invariants.append({
+                "invariant_id": inv["invariant_id"],
+                "test_ids": test_ids,
+            })
+        normalized.append({
+            "issue_id": item["issue_id"],
+            "invariants": invariants,
+        })
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def build_report(processed_items, total_invariants, covered_invariants, all_test_ids):
     total_issues = len(processed_items)
     total_tests = len(all_test_ids)
@@ -186,8 +213,13 @@ def load_checkpoint(path):
     return data
 
 
-def write_checkpoint(path, last_index, processed_items):
-    content = json.dumps({"last_index": last_index, "processed_items": processed_items}, sort_keys=True)
+def write_checkpoint(path, last_index, processed_items, input_fingerprint):
+    content = json.dumps({
+        "format_version": CHECKPOINT_FORMAT_VERSION,
+        "input_fingerprint": input_fingerprint,
+        "last_index": last_index,
+        "processed_items": processed_items,
+    }, sort_keys=True)
     atomic_write(path, content)
 
 
@@ -200,6 +232,7 @@ def main():
     args = parse_args()
     raw_data = validate_input_file(args.input)
 
+    input_fingerprint = compute_input_fingerprint(raw_data)
     checkpoint_data = load_checkpoint(args.resume_checkpoint)
 
     processed_items = []
@@ -211,76 +244,80 @@ def main():
     sorted_items = sorted(raw_data, key=lambda x: x["issue_id"])
 
     if checkpoint_data:
+        checkpoint_is_current = (
+            checkpoint_data.get("format_version") == CHECKPOINT_FORMAT_VERSION
+            and checkpoint_data.get("input_fingerprint") == input_fingerprint
+        )
+        if not checkpoint_is_current:
+            sys.stderr.write(
+                "Warning: checkpoint is stale or incompatible with current input; recomputing from scratch\n"
+            )
+            checkpoint_data = None
+
+    if checkpoint_data:
         start_index = checkpoint_data["last_index"] + 1
         processed_items = checkpoint_data["processed_items"]
 
         if start_index > len(sorted_items):
-            fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint index exceeds current input size")
+            start_index = len(sorted_items)
 
-        expected_prefix = [item["issue_id"] for item in sorted_items[:start_index]]
-        actual_prefix = [item.get("issue_id") for item in processed_items]
-        if expected_prefix != actual_prefix:
-            fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint does not match current input data")
-
-        for existing in processed_items:
-            for inv in existing.get("invariants", []):
+        for item in processed_items:
+            for inv in item.get("invariants", []):
                 total_invariants += 1
                 if inv.get("verified"):
                     covered_invariants += 1
                 for t_id in inv.get("test_ids", []):
                     all_test_ids.add(t_id)
 
-    for index in range(start_index, len(sorted_items)):
-        item = sorted_items[index]
+    for item in sorted_items[start_index:]:
         issue_id = item["issue_id"]
-        title = str(item.get("title", ""))
-        sorted_invariants = sorted(item.get("invariants", []), key=lambda x: x["invariant_id"])
-
+        title = item.get("title", "")
         processed_invariants = []
-        for inv in sorted_invariants:
+        for inv in item.get("invariants", []):
             inv_id = inv["invariant_id"]
-            desc = str(inv.get("description", ""))
-            test_ids = sorted(str(t) for t in inv.get("test_ids", []))
-            is_verified = len(test_ids) > 0
+            description = inv.get("description", "")
+            test_ids = inv.get("test_ids", [])
+            verified = len(test_ids) > 0
             total_invariants += 1
-            if is_verified:
+            if verified:
                 covered_invariants += 1
             for t_id in test_ids:
                 all_test_ids.add(t_id)
             processed_invariants.append({
                 "invariant_id": inv_id,
-                "description": desc,
+                "description": description,
                 "test_ids": test_ids,
-                "verified": is_verified
+                "verified": verified,
             })
-
         processed_items.append({
             "issue_id": issue_id,
             "title": title,
-            "invariants": processed_invariants
+            "invariants": processed_invariants,
         })
 
-        if args.resume_checkpoint and not args.dry_run:
-            write_checkpoint(args.resume_checkpoint, index, processed_items)
+        if args.resume_checkpoint:
+            write_checkpoint(args.resume_checkpoint, start_index + len(processed_items) - 1, processed_items, input_fingerprint)
 
     report = build_report(processed_items, total_invariants, covered_invariants, all_test_ids)
 
-    if args.strict and report["summary"]["status"] != "PASSED":
-        if not args.dry_run:
-            output_content = json.dumps(report, indent=2, sort_keys=True) if args.format == "json" else generate_human_readable(report)
-            atomic_write(args.output, output_content)
-            clear_checkpoint(args.resume_checkpoint)
-        fail(EXIT_TRACEABILITY_GAP, "Strict Mode Error: Traceability gaps found.")
+    if args.format == "human":
+        output_content = generate_human_readable(report)
+    else:
+        output_content = json.dumps(report, indent=2, sort_keys=True) + "\n"
 
     if args.dry_run:
-        sys.stdout.write("Dry-run execution completed successfully. No files written.\n")
-        sys.exit(EXIT_SUCCESS)
+        sys.stdout.write(output_content)
+    else:
+        atomic_write(args.output, output_content)
 
-    output_content = json.dumps(report, indent=2, sort_keys=True) if args.format == "json" else generate_human_readable(report)
-    atomic_write(args.output, output_content)
-    clear_checkpoint(args.resume_checkpoint)
-    sys.exit(EXIT_SUCCESS)
+    if args.resume_checkpoint:
+        clear_checkpoint(args.resume_checkpoint)
+
+    if args.strict and report["summary"]["status"] != "PASSED":
+        fail(EXIT_TRACEABILITY_GAP, "Error: traceability gap detected in strict mode")
+
+    return EXIT_SUCCESS
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
