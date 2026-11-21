@@ -850,3 +850,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-375 -->
 - #375: Enforce XDR integer ranges in runtime schema validators
+
+<!-- handsoff-issue-376 -->
+- #376: Align Python model handling of unknown fields with JSON Schema
