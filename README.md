@@ -847,3 +847,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-373 -->
 - #373: Preserve map key and value types across generated bindings
+
+<!-- handsoff-issue-375 -->
+- #375: Enforce XDR integer ranges in runtime schema validators
