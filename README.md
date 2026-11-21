@@ -844,3 +844,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-284 -->
 - #284: add_admin_signer and remove_admin_signer Omit Event Emissions and Governance Audit Chain Records
+
+<!-- handsoff-issue-288 -->
+- #288: set_hysteresis_margin Bypasses M-of-N Multisig Authorization Hardcoding Single Legacy Admin Authentication
