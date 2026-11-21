@@ -60,8 +60,12 @@ impl SimpleAMM {
 
     /// Simplified swap output calculation (not production logic).
     fn compute_swap_output(amount_in: u64) -> u64 {
-        // Example: simple 1:1 swap with a 0.3% fee
-        (amount_in * 997) / 1000
+        // Example: simple 1:1 swap with a 0.3% fee.
+        // Perform the intermediate multiplication in u128 so the full u64
+        // input domain is supported without overflow; the quotient is bounded
+        // by u64::MAX and fits back into u64. Floor rounding is preserved.
+        let numerator = (amount_in as u128) * 997;
+        (numerator / 1000) as u64
     }
 }
 
@@ -118,6 +122,12 @@ mod tests {
         );
     }
 
+    /// u128 reference implementation of the fee calculation, used to validate
+    /// the contract's output across the full u64 input domain.
+    fn reference_swap_output(amount_in: u64) -> u64 {
+        ((amount_in as u128) * 997 / 1000) as u64
+    }
+
     #[test]
     fn test_swap_with_passing_gate() {
         let fixture = setup();
@@ -166,5 +176,23 @@ mod tests {
         );
 
         assert_eq!(result, Err(Ok(AmmError::UserHighRisk)));
+    }
+
+    #[test]
+    fn test_compute_swap_output_no_overflow() {
+        // Boundary values around the u64::MAX / 997 overflow threshold.
+        let threshold = u64::MAX / 997;
+        let cases = [0u64, 1, threshold, threshold + 1, u64::MAX];
+
+        for &amount_in in cases.iter() {
+            let expected = reference_swap_output(amount_in);
+            let actual = SimpleAMM::compute_swap_output(amount_in);
+            assert_eq!(actual, expected, "mismatch for amount_in = {}", amount_in);
+        }
+    }
+
+    #[test]
+    fn test_compute_swap_output_preserves_example() {
+        assert_eq!(SimpleAMM::compute_swap_output(1_000_000), 997_000);
     }
 }
