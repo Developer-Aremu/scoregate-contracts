@@ -83,9 +83,13 @@ fn main() -> Result<()> {
     };
 
     let dir = PathBuf::from(&out_dir);
-    std::fs::create_dir_all(&dir)?;
+    // Check mode is strictly read-only: never create the output directory.
+    if !check {
+        std::fs::create_dir_all(&dir)?;
+    }
 
-    // Helper: render JSON + TS + Python for one struct and write them if changed.
+    // Helper: render JSON + TS + Python for one struct and either write them
+    // (regeneration) or compare them against the committed artifacts (check).
     let mut any_changed = false;
 
     let write_type = |schema_file: &str,
@@ -93,6 +97,7 @@ fn main() -> Result<()> {
                       py_file: &str,
                       struct_: &soroban_sdk::xdr::ScSpecUdtStructV0,
                       dir: &Path,
+                      check: bool,
                       changed: &mut bool|
      -> Result<()> {
         let schema_text = {
@@ -102,19 +107,28 @@ fn main() -> Result<()> {
         };
         let ts_text = struct_to_typescript(struct_);
         let py_text = struct_to_python(struct_);
-        *changed |= write_if_changed(&dir.join(schema_file), &schema_text)?;
-        *changed |= write_if_changed(&dir.join(ts_file), &ts_text)?;
-        *changed |= write_if_changed(&dir.join(py_file), &py_text)?;
+        *changed |= sync_artifact(&dir.join(schema_file), &schema_text, check)?;
+        *changed |= sync_artifact(&dir.join(ts_file), &ts_text, check)?;
+        *changed |= sync_artifact(&dir.join(py_file), &py_text, check)?;
         Ok(())
     };
 
-    write_type(SCHEMA_FILE, TYPESCRIPT_FILE, PYTHON_FILE, &risk_score, &dir, &mut any_changed)?;
+    write_type(
+        SCHEMA_FILE,
+        TYPESCRIPT_FILE,
+        PYTHON_FILE,
+        &risk_score,
+        &dir,
+        check,
+        &mut any_changed,
+    )?;
     write_type(
         AGGREGATE_RISK_SCORE_SCHEMA_FILE,
         AGGREGATE_RISK_SCORE_TYPESCRIPT_FILE,
         AGGREGATE_RISK_SCORE_PYTHON_FILE,
         &aggregate,
         &dir,
+        check,
         &mut any_changed,
     )?;
     write_type(
@@ -123,6 +137,7 @@ fn main() -> Result<()> {
         SCORE_SUBMISSION_PYTHON_FILE,
         &submission,
         &dir,
+        check,
         &mut any_changed,
     )?;
     write_type(
@@ -131,6 +146,7 @@ fn main() -> Result<()> {
         BATCH_ATTESTATION_PYTHON_FILE,
         &attestation,
         &dir,
+        check,
         &mut any_changed,
     )?;
 
@@ -150,20 +166,22 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Write `contents` to `path` only when it differs; returns whether anything
-/// was written. Used both for regeneration and for CI-style drift detection.
-fn write_if_changed(path: &Path, contents: &str) -> Result<bool> {
-    match std::fs::read_to_string(path) {
-        Ok(existing) if existing == contents => Ok(false),
-        Ok(_) => {
-            std::fs::write(path, contents)?;
-            Ok(true)
-        }
-        Err(_) => {
-            std::fs::write(path, contents)?;
-            Ok(true)
-        }
+/// Reconcile a single artifact with `contents`.
+///
+/// In regeneration mode (`check == false`) the file is written when it is
+/// missing or differs, returning whether anything was written. In check mode
+/// (`check == true`) the file is never touched: the artifact is only compared
+/// against `contents`, returning whether it is missing or stale.
+fn sync_artifact(path: &Path, contents: &str, check: bool) -> Result<bool> {
+    let existing = std::fs::read_to_string(path).ok();
+    let matches = matches!(&existing, Some(existing) if existing == contents);
+    if matches {
+        return Ok(false);
     }
+    if !check {
+        std::fs::write(path, contents)?;
+    }
+    Ok(true)
 }
 
 fn print_usage() {
