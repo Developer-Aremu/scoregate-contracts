@@ -175,66 +175,19 @@ pub const DEFAULT_DISPUTE_REVEAL_WINDOW_SECS: u64 = 600;
 /// Maximum finality buffer duration — 24 hours.
 pub const MAX_FINALITY_BUFFER_SECS: u64 = 86_400;
 
-/// Default heartbeat alert threshold — 1 hour.
-pub const DEFAULT_HEARTBEAT_ALERT_THRESHOLD_SECS: u64 = 3_600;
+// ── Governance proposal review approvals (issue #365) ────────────────────────
 
-// ── HyperLogLog unique-wallet estimation ─────────────────────────────────────
+/// Hard ceiling on the number of distinct proposal targets that may hold
+/// reviewer-approval state at any one time.
+///
+/// `approve_proposal_review` resolves the supplied target to an active
+/// proposal identity before writing; this bound caps the number of stored
+/// approval target keys so repeated arbitrary targets cannot grow instance
+/// state without limit. Records are retired when the proposal lifecycle
+/// completes (execute/cancel).
+pub const MAX_PROPOSAL_APPROVAL_TARGETS: u32 = 50;
 
-/// Minimum allowed HLL precision (2^4 = 16 registers).
-pub const HLL_MIN_PRECISION: u32 = 4;
-/// Maximum allowed HLL precision (2^16 = 65536 registers).
-pub const HLL_MAX_PRECISION: u32 = 16;
-/// Default HLL precision until the admin configures one explicitly.
-pub const HLL_DEFAULT_PRECISION: u32 = 8;
-
-// ── Quorum reduction ──────────────────────────────────────────────────────────
-
-// ── Quorum / consensus ────────────────────────────────────────────────────────
-
-/// Default window (seconds) for which a quorum-failure is considered recent.
-/// After this window the failure state is cleared automatically.
-pub const DEFAULT_QUORUM_FAILURE_WINDOW_SECS: u64 = 86_400; // 24 hours
-
-pub const MAX_TRACKED_SCORE_ENTRIES: u32 = 500;
-pub const SCORE_ENTRY_INDEX_BUCKETS: u32 = 16;
-pub const MAX_EXPIRING_ENTRIES_PER_CALL: u32 = 100;
-
-/// Maximum number of concurrently pending parameter-change proposals.
-pub const MAX_PENDING_PARAMETER_PROPOSALS: u32 = 10;
-
-/// Maximum number of parameter proposal IDs retained in the historical proposal index.
-pub const MAX_PARAMETER_PROPOSAL_HISTORY: u32 = 100;
-
-/// Time-lock delay before a pending simple parameter change may be applied.
-pub const DEFAULT_PARAM_CHANGE_DELAY_SECS: u64 = 86_400;
-
-/// Maximum number of entries retained in the rate-limit override audit log.
-pub const MAX_RATE_LIMIT_OVERRIDE_LOG: u32 = 100;
-
-/// Sanity ceiling on the per-call score boost `propagate_contagion` may
-/// apply to a counterparty. Bounds how much damage a single authorized call
-/// can do even under a compromised/misbehaving admin signer set. (Issue #55)
-pub const MAX_CONTAGION_BOOST: u32 = 50;
-
-/// Operator-facing manifest fields that the drift checker treats as the
-/// stable configuration surface for deployed instances.
-pub const CONFIG_DRIFT_MANIFEST_FIELDS: &[&str] = &[
-    "contract_version",
-    "paused",
-    "risk_threshold",
-    "jump_threshold",
-    "staleness_window",
-    "upgrade_delay",
-    "cooldown",
-    "service_threshold",
-    "admin_threshold",
-    "consensus_threshold_k",
-    "consensus_epsilon",
-    "reveal_window",
-    "finality_buffer",
-    "heartbeat_alert_threshold",
-    "oracle_staleness_threshold",
-];
-
-/// Nonce exhaustion warning threshold: emit alert event when nonce exceeds this threshold.
-pub const NONCE_EXHAUSTION_WARNING_THRESHOLD: u64 = u64::MAX - 10_000;
+/// TTL (ledgers) applied to stored proposal approval records so completed
+/// records are reclaimed even if explicit cleanup is skipped.
+pub const PROPOSAL_APPROVAL_TTL_THRESHOLD: u32 = 518_400;
+pub const PROPOSAL_APPROVAL_TTL_EXTEND_TO: u32 = 777_600;
