@@ -850,3 +850,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-359 -->
 - #359: Allow an idle registered oracle to recover on a subsequent consultation
+
+<!-- handsoff-issue-360 -->
+- #360: Hash score identities and complete records in state checksums
