@@ -19,6 +19,10 @@ MAX_INVARIANTS_PER_ISSUE = 200
 MAX_TESTS_PER_INVARIANT = 200
 SUPPORTED_INPUT_VERSIONS = {"1.0.0"}
 
+STATUS_PASSED = "PASSED"
+STATUS_FAILED = "FAILED"
+STATUS_NO_EVIDENCE = "NO_EVIDENCE"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ScoreGate Traceability Generator")
@@ -122,7 +126,12 @@ def build_report(processed_items, total_invariants, covered_invariants, all_test
     total_issues = len(processed_items)
     total_tests = len(all_test_ids)
     coverage = (covered_invariants / total_invariants * 100.0) if total_invariants > 0 else 0.0
-    status = "PASSED" if (total_invariants == covered_invariants) else "FAILED"
+    if total_invariants == 0:
+        status = STATUS_NO_EVIDENCE
+    elif covered_invariants == total_invariants:
+        status = STATUS_PASSED
+    else:
+        status = STATUS_FAILED
     return {
         "version": "1.0.0",
         "timestamp": int(time.time()),
@@ -215,15 +224,10 @@ def main():
         processed_items = checkpoint_data["processed_items"]
 
         if start_index > len(sorted_items):
-            fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint index exceeds current input size")
+            fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint index out of range")
 
-        expected_prefix = [item["issue_id"] for item in sorted_items[:start_index]]
-        actual_prefix = [item.get("issue_id") for item in processed_items]
-        if expected_prefix != actual_prefix:
-            fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint does not match current input data")
-
-        for existing in processed_items:
-            for inv in existing.get("invariants", []):
+        for item in processed_items:
+            for inv in item.get("invariants", []):
                 total_invariants += 1
                 if inv.get("verified"):
                     covered_invariants += 1
@@ -233,25 +237,27 @@ def main():
     for index in range(start_index, len(sorted_items)):
         item = sorted_items[index]
         issue_id = item["issue_id"]
-        title = str(item.get("title", ""))
-        sorted_invariants = sorted(item.get("invariants", []), key=lambda x: x["invariant_id"])
+        title = item.get("title", "")
+        invariants = item.get("invariants", [])
 
         processed_invariants = []
-        for inv in sorted_invariants:
+        for inv in invariants:
             inv_id = inv["invariant_id"]
-            desc = str(inv.get("description", ""))
-            test_ids = sorted(str(t) for t in inv.get("test_ids", []))
-            is_verified = len(test_ids) > 0
+            description = inv.get("description", "")
+            test_ids = inv.get("test_ids", [])
+            verified = len(test_ids) > 0
+
             total_invariants += 1
-            if is_verified:
+            if verified:
                 covered_invariants += 1
             for t_id in test_ids:
                 all_test_ids.add(t_id)
+
             processed_invariants.append({
                 "invariant_id": inv_id,
-                "description": desc,
+                "description": description,
                 "test_ids": test_ids,
-                "verified": is_verified
+                "verified": verified
             })
 
         processed_items.append({
@@ -260,25 +266,27 @@ def main():
             "invariants": processed_invariants
         })
 
-        if args.resume_checkpoint and not args.dry_run:
+        if args.resume_checkpoint:
             write_checkpoint(args.resume_checkpoint, index, processed_items)
 
     report = build_report(processed_items, total_invariants, covered_invariants, all_test_ids)
 
-    if args.strict and report["summary"]["status"] != "PASSED":
-        if not args.dry_run:
-            output_content = json.dumps(report, indent=2, sort_keys=True) if args.format == "json" else generate_human_readable(report)
-            atomic_write(args.output, output_content)
-            clear_checkpoint(args.resume_checkpoint)
-        fail(EXIT_TRACEABILITY_GAP, "Strict Mode Error: Traceability gaps found.")
+    if args.format == "human":
+        output_content = generate_human_readable(report)
+    else:
+        output_content = json.dumps(report, indent=2, sort_keys=True)
 
-    if args.dry_run:
-        sys.stdout.write("Dry-run execution completed successfully. No files written.\n")
-        sys.exit(EXIT_SUCCESS)
+    if not args.dry_run:
+        atomic_write(args.output, output_content)
 
-    output_content = json.dumps(report, indent=2, sort_keys=True) if args.format == "json" else generate_human_readable(report)
-    atomic_write(args.output, output_content)
-    clear_checkpoint(args.resume_checkpoint)
+    if args.resume_checkpoint:
+        clear_checkpoint(args.resume_checkpoint)
+
+    status = report["summary"]["status"]
+    if args.strict and status != STATUS_PASSED:
+        sys.stderr.write(f"Error: strict mode requires PASSED status, got {status}\n")
+        sys.exit(EXIT_TRACEABILITY_GAP)
+
     sys.exit(EXIT_SUCCESS)
 
 
