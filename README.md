@@ -847,3 +847,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-333 -->
 - #333: Collect Any imports when generating Python annotations
+
+<!-- handsoff-issue-334 -->
+- #334: Preserve union grouping in TypeScript array element types
