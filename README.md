@@ -847,3 +847,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-358 -->
 - #358: Calculate score age from the score observation timestamp
+
+<!-- handsoff-issue-359 -->
+- #359: Allow an idle registered oracle to recover on a subsequent consultation
