@@ -197,6 +197,41 @@ def generate_human_readable(report):
     return "\n".join(lines) + "\n"
 
 
+def _is_valid_index(value):
+    """A checkpoint index must be a non-negative, non-bool integer."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _validate_checkpoint_item(item, index):
+    """Validate a single processed item stored in a checkpoint."""
+    if not isinstance(item, dict):
+        fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint processed_items[{index}] is not an object")
+
+    issue_id = item.get("issue_id")
+    if not isinstance(issue_id, str) or not issue_id.strip():
+        fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint processed_items[{index}] missing valid 'issue_id'")
+
+    invariants = item.get("invariants")
+    if not isinstance(invariants, list):
+        fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint item '{issue_id}' has invalid 'invariants' field")
+
+    for inv_index, inv in enumerate(invariants):
+        if not isinstance(inv, dict):
+            fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint item '{issue_id}' invariant at index {inv_index} is not an object")
+
+        inv_id = inv.get("invariant_id")
+        if not isinstance(inv_id, str) or not inv_id.strip():
+            fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint item '{issue_id}' invariant at index {inv_index} missing valid 'invariant_id'")
+
+        test_ids = inv.get("test_ids", [])
+        if not isinstance(test_ids, list):
+            fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint invariant '{inv_id}' in item '{issue_id}' has invalid 'test_ids' field")
+
+        for t_index, t_id in enumerate(test_ids):
+            if not isinstance(t_id, (str, int)) or isinstance(t_id, bool):
+                fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint invariant '{inv_id}' in item '{issue_id}' has invalid test_id at index {t_index}")
+
+
 def load_checkpoint(path):
     if not path or not os.path.exists(path):
         return None
@@ -207,69 +242,57 @@ def load_checkpoint(path):
         fail(EXIT_CHECKPOINT_ERROR, f"Error reading checkpoint: {str(e)}")
         return None
     if not isinstance(data, dict) or "last_index" not in data or "processed_items" not in data:
-        fail(EXIT_CHECKPOINT_ERROR, "Error: malformed checkpoint file")
-    if not isinstance(data["last_index"], int) or not isinstance(data["processed_items"], list):
-        fail(EXIT_CHECKPOINT_ERROR, "Error: malformed checkpoint file")
+        fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint missing required fields")
+        return None
+
+    last_index = data["last_index"]
+    if not _is_valid_index(last_index):
+        fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint 'last_index' must be a non-negative integer, got {last_index!r}")
+
+    processed_items = data["processed_items"]
+    if not isinstance(processed_items, list):
+        fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint 'processed_items' must be a list")
+
+    if last_index > len(processed_items):
+        fail(EXIT_CHECKPOINT_ERROR, f"Error: checkpoint 'last_index' {last_index} exceeds processed_items length {len(processed_items)}")
+
+    for index, item in enumerate(processed_items):
+        _validate_checkpoint_item(item, index)
+
     return data
-
-
-def write_checkpoint(path, last_index, processed_items, input_fingerprint):
-    content = json.dumps({
-        "format_version": CHECKPOINT_FORMAT_VERSION,
-        "input_fingerprint": input_fingerprint,
-        "last_index": last_index,
-        "processed_items": processed_items,
-    }, sort_keys=True)
-    atomic_write(path, content)
-
-
-def clear_checkpoint(path):
-    if path and os.path.exists(path):
-        os.remove(path)
 
 
 def main():
     args = parse_args()
-    raw_data = validate_input_file(args.input)
 
-    input_fingerprint = compute_input_fingerprint(raw_data)
-    checkpoint_data = load_checkpoint(args.resume_checkpoint)
+    data = validate_input_file(args.input)
+    fingerprint = compute_input_fingerprint(data)
 
+    checkpoint = load_checkpoint(args.resume_checkpoint)
+    start_index = 0
     processed_items = []
     total_invariants = 0
     covered_invariants = 0
     all_test_ids = set()
-    start_index = 0
 
-    sorted_items = sorted(raw_data, key=lambda x: x["issue_id"])
+    if checkpoint is not None:
+        if checkpoint.get("format_version") != CHECKPOINT_FORMAT_VERSION:
+            fail(EXIT_CHECKPOINT_ERROR, f"Error: unsupported checkpoint format_version '{checkpoint.get('format_version')}'")
+        if checkpoint.get("input_fingerprint") != fingerprint:
+            fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint input fingerprint does not match current input")
 
-    if checkpoint_data:
-        checkpoint_is_current = (
-            checkpoint_data.get("format_version") == CHECKPOINT_FORMAT_VERSION
-            and checkpoint_data.get("input_fingerprint") == input_fingerprint
-        )
-        if not checkpoint_is_current:
-            sys.stderr.write(
-                "Warning: checkpoint is stale or incompatible with current input; recomputing from scratch\n"
-            )
-            checkpoint_data = None
-
-    if checkpoint_data:
-        start_index = checkpoint_data["last_index"] + 1
-        processed_items = checkpoint_data["processed_items"]
-
-        if start_index > len(sorted_items):
-            start_index = len(sorted_items)
-
+        start_index = checkpoint["last_index"]
+        processed_items = list(checkpoint["processed_items"])
         for item in processed_items:
-            for inv in item.get("invariants", []):
+            for inv in item["invariants"]:
                 total_invariants += 1
                 if inv.get("verified"):
                     covered_invariants += 1
                 for t_id in inv.get("test_ids", []):
                     all_test_ids.add(t_id)
 
-    for item in sorted_items[start_index:]:
+    for index in range(start_index, len(data)):
+        item = data[index]
         issue_id = item["issue_id"]
         title = item.get("title", "")
         processed_invariants = []
@@ -286,8 +309,8 @@ def main():
             processed_invariants.append({
                 "invariant_id": inv_id,
                 "description": description,
-                "test_ids": test_ids,
                 "verified": verified,
+                "test_ids": list(test_ids),
             })
         processed_items.append({
             "issue_id": issue_id,
@@ -295,29 +318,23 @@ def main():
             "invariants": processed_invariants,
         })
 
-        if args.resume_checkpoint:
-            write_checkpoint(args.resume_checkpoint, start_index + len(processed_items) - 1, processed_items, input_fingerprint)
-
     report = build_report(processed_items, total_invariants, covered_invariants, all_test_ids)
 
     if args.format == "human":
-        output_content = generate_human_readable(report)
+        output = generate_human_readable(report)
     else:
-        output_content = json.dumps(report, indent=2, sort_keys=True) + "\n"
+        output = json.dumps(report, indent=2) + "\n"
 
     if args.dry_run:
-        sys.stdout.write(output_content)
+        sys.stdout.write(output)
     else:
-        atomic_write(args.output, output_content)
-
-    if args.resume_checkpoint:
-        clear_checkpoint(args.resume_checkpoint)
+        atomic_write(args.output, output)
 
     if args.strict and report["summary"]["status"] != "PASSED":
         fail(EXIT_TRACEABILITY_GAP, "Error: traceability gap detected in strict mode")
 
-    return EXIT_SUCCESS
+    sys.exit(EXIT_SUCCESS)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
