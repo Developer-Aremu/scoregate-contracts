@@ -847,3 +847,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-288 -->
 - #288: set_hysteresis_margin Bypasses M-of-N Multisig Authorization Hardcoding Single Legacy Admin Authentication
+
+<!-- handsoff-issue-289 -->
+- #289: override_rate_limit Omits Resetting TokenBucket Rendering Override Ineffective in Burst Mode
