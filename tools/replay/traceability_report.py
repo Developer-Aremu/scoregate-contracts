@@ -40,6 +40,22 @@ def fail(exit_code, message):
     sys.exit(exit_code)
 
 
+def normalize_test_id(t_id):
+    """Return a normalized test identifier, or None if it is not meaningful.
+
+    Accepts nonblank strings and explicitly supported integers. Booleans are
+    rejected (bool is a subclass of int but is not a meaningful test id).
+    """
+    if isinstance(t_id, bool):
+        return None
+    if isinstance(t_id, str):
+        normalized = t_id.strip()
+        return normalized if normalized else None
+    if isinstance(t_id, int):
+        return str(t_id)
+    return None
+
+
 def validate_issue(item, index):
     if not isinstance(item, dict):
         fail(EXIT_CORRUPT_INPUT, f"Error: item at index {index} is not an object")
@@ -76,7 +92,7 @@ def validate_issue(item, index):
             fail(EXIT_CORRUPT_INPUT, f"Error: invariant '{inv_id}' in issue '{issue_id}' exceeds max test_ids of {MAX_TESTS_PER_INVARIANT}")
 
         for t_index, t_id in enumerate(test_ids):
-            if not isinstance(t_id, (str, int)):
+            if normalize_test_id(t_id) is None:
                 fail(EXIT_CORRUPT_INPUT, f"Error: invariant '{inv_id}' in issue '{issue_id}' has invalid test_id at index {t_index}")
 
     return issue_id
@@ -217,15 +233,11 @@ def main():
     all_test_ids = set()
     start_index = 0
 
-    sorted_items = sorted(raw_data, key=lambda x: x["issue_id"])
+    sorted_items = sorted(raw_data, key=lambda x: x.get("issue_id", ""))
 
     if checkpoint_data:
         start_index = checkpoint_data["last_index"] + 1
         processed_items = checkpoint_data["processed_items"]
-
-        if start_index > len(sorted_items):
-            fail(EXIT_CHECKPOINT_ERROR, "Error: checkpoint index out of range")
-
         for item in processed_items:
             for inv in item.get("invariants", []):
                 total_invariants += 1
@@ -238,25 +250,33 @@ def main():
         item = sorted_items[index]
         issue_id = item["issue_id"]
         title = item.get("title", "")
-        invariants = item.get("invariants", [])
-
         processed_invariants = []
-        for inv in invariants:
+
+        for inv in item.get("invariants", []):
             inv_id = inv["invariant_id"]
             description = inv.get("description", "")
-            test_ids = inv.get("test_ids", [])
-            verified = len(test_ids) > 0
+            raw_test_ids = inv.get("test_ids", [])
 
+            normalized_test_ids = []
+            seen_test_ids = set()
+            for t_id in raw_test_ids:
+                normalized = normalize_test_id(t_id)
+                if normalized is None or normalized in seen_test_ids:
+                    continue
+                seen_test_ids.add(normalized)
+                normalized_test_ids.append(normalized)
+
+            verified = len(normalized_test_ids) > 0
             total_invariants += 1
             if verified:
                 covered_invariants += 1
-            for t_id in test_ids:
+            for t_id in normalized_test_ids:
                 all_test_ids.add(t_id)
 
             processed_invariants.append({
                 "invariant_id": inv_id,
                 "description": description,
-                "test_ids": test_ids,
+                "test_ids": normalized_test_ids,
                 "verified": verified
             })
 
@@ -282,10 +302,8 @@ def main():
     if args.resume_checkpoint:
         clear_checkpoint(args.resume_checkpoint)
 
-    status = report["summary"]["status"]
-    if args.strict and status != STATUS_PASSED:
-        sys.stderr.write(f"Error: strict mode requires PASSED status, got {status}\n")
-        sys.exit(EXIT_TRACEABILITY_GAP)
+    if args.strict and report["summary"]["status"] != STATUS_PASSED:
+        fail(EXIT_TRACEABILITY_GAP, "Error: traceability gap detected in strict mode")
 
     sys.exit(EXIT_SUCCESS)
 
