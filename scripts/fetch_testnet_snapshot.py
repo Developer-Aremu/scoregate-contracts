@@ -23,11 +23,19 @@ Bounded exports (issue #350):
   (--max-pages, --max-records, --max-bytes). When any ceiling is hit the export
   is reported as TRUNCATED (non-zero exit) so partial data is never presented as
   a complete, successful export.
+
+Atomic export (issue #351):
+  Records are written to a temporary sibling file and the final output path is
+  only replaced (via os.replace) after conversion and close succeed. A failed
+  conversion or write leaves any previously valid export untouched and cleans
+  up the temporary file.
 """
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -195,6 +203,42 @@ def convert_event_to_snapshot_entry(event):
     }
 
 
+def write_snapshot_atomic(output_path, events, output_format):
+    """Write events to ``output_path`` atomically.
+
+    Records are streamed to a temporary sibling file. The final output path is
+    only replaced (via os.replace) after every record has been converted and
+    written and the temporary file has been closed successfully. On any
+    conversion or write error the temporary file is removed and the previous
+    export (if any) is left untouched.
+    """
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=os.path.basename(output_path) + ".",
+        suffix=".tmp",
+        dir=output_dir,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for event in events:
+                if output_format == "replay":
+                    record = convert_event_to_snapshot_entry(event)
+                    if record is None:
+                        continue
+                else:
+                    record = event
+                f.write(json.dumps(record) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Export Soroban RPC events to NDJSON snapshot format."
@@ -217,27 +261,19 @@ def main():
             "that tools/replay can ingest without deserialization errors."
         ),
     )
-    parser.add_argument(
-        "--request-timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT,
-        help="Per-request deadline in seconds (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--max-pages", type=int, default=DEFAULT_MAX_PAGES,
-        help="Maximum number of RPC pages to fetch (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--max-records", type=int, default=DEFAULT_MAX_RECORDS,
-        help="Maximum number of events to collect (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--max-bytes", type=int, default=DEFAULT_MAX_BYTES,
-        help="Maximum total response bytes to read (default: %(default)s)",
-    )
-
+    parser.add_argument("--request-timeout", type=float,
+                        default=DEFAULT_REQUEST_TIMEOUT,
+                        help="Per-request deadline in seconds")
+    parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES,
+                        help="Maximum number of RPC pages to fetch")
+    parser.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS,
+                        help="Maximum number of records to collect")
+    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES,
+                        help="Maximum total response bytes to collect")
     args = parser.parse_args()
 
-    print(f"Fetching events from {args.rpc_url} starting at ledger {args.start_ledger}...")
-    raw_events, truncated_reason = fetch_events(
+    print(f"Fetching events from {args.rpc_url}...", file=sys.stderr)
+    events, truncated_reason = fetch_events(
         args.rpc_url,
         args.contract_id,
         args.start_ledger,
@@ -246,48 +282,24 @@ def main():
         max_records=args.max_records,
         max_bytes=args.max_bytes,
     )
-    print(f"Fetched {len(raw_events)} events.")
 
-    count = 0
-    skipped = 0
-    with open(args.output, "w") as f:
-        for item in raw_events:
-            if args.format == "raw":
-                ndjson_entry = {
-                    "event_id": item.get("id"),
-                    "ledger": item.get("ledger"),
-                    "ledger_closed_at": item.get("ledgerClosedAt"),
-                    "contract_id": item.get("contractId"),
-                    "tx_hash": item.get("txHash"),
-                    "topic": item.get("topic"),
-                    "value": item.get("value"),
-                    "in_successful_contract_call": item.get("inSuccessfulContractCall"),
-                }
-            else:
-                # replay format: convert to SnapshotEntry
-                ndjson_entry = convert_event_to_snapshot_entry(item)
-                if ndjson_entry is None:
-                    skipped += 1
-                    continue
+    print(f"Fetched {len(events)} events.", file=sys.stderr)
 
-            f.write(json.dumps(ndjson_entry) + "\n")
-            count += 1
+    try:
+        write_snapshot_atomic(args.output, events, args.format)
+    except Exception as e:
+        print(f"Export Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    fmt_note = f" (format={args.format}"
-    if args.format == "replay" and skipped:
-        fmt_note += f", {skipped} non-score events skipped"
-    fmt_note += ")"
-
-    if truncated_reason is not None:
+    if truncated_reason:
         print(
-            f"TRUNCATED: exported {count} snapshot records to {args.output}{fmt_note} "
-            f"-- {truncated_reason}. Output is INCOMPLETE; raise the relevant "
-            f"limit or narrow the ledger range to obtain a full export.",
+            f"Export TRUNCATED: {truncated_reason}. "
+            f"Partial data written to {args.output}.",
             file=sys.stderr,
         )
         sys.exit(2)
 
-    print(f"Successfully exported {count} snapshot records to {args.output}{fmt_note}")
+    print(f"Snapshot written to {args.output}", file=sys.stderr)
 
 
 if __name__ == "__main__":
