@@ -847,3 +847,6 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-370 -->
 - #370: Give replay input errors a path and line number
+
+<!-- handsoff-issue-372 -->
+- #372: Enforce tuple cardinality in generated JSON schemas
