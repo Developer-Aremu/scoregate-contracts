@@ -59,3 +59,57 @@ def test_covered_invariant_passes_strict(tmp_path):
     assert report is not None
     assert report["status"] == "PASSED"
     assert result.returncode == 0
+
+
+def test_nonexistent_test_id_described_as_reference(tmp_path):
+    # Failure case: a referenced test ID that was never executed must be
+    # described as a reference/link, not as a successful execution.
+    payload = [
+        {
+            "issue": 1,
+            "invariants": [
+                {"id": "inv-1", "covered": True, "test_ids": ["does-not-exist-9999"]}
+            ],
+        }
+    ]
+    result, report = _run_report(tmp_path, payload)
+    assert report is not None
+
+    combined = (result.stdout + result.stderr).lower()
+    # Human output must not claim execution or passing tests.
+    assert "executed" not in combined
+    assert "verified" not in combined
+    assert "passed" not in combined
+    # Human output should use reference/link terminology.
+    assert "referenc" in combined or "linked" in combined
+
+    # JSON and human output must describe the same evidence level.
+    serialized = json.dumps(report).lower()
+    assert "executed" not in serialized
+    assert "verified" not in serialized
+    assert "passed" not in serialized
+
+
+def test_referenced_test_id_success_case(tmp_path):
+    # Success case: a referenced test ID is reported as a reference and the
+    # coverage metric is documented, without claiming execution.
+    payload = [
+        {
+            "issue": 1,
+            "invariants": [
+                {"id": "inv-1", "covered": True, "test_ids": ["test_alpha"]}
+            ],
+        }
+    ]
+    result, report = _run_report(tmp_path, payload)
+    assert report is not None
+    assert report["status"] == "PASSED"
+    assert result.returncode == 0
+
+    combined = (result.stdout + result.stderr).lower()
+    assert "executed" not in combined
+    assert "verified" not in combined
+    assert "passed" not in combined
+    assert "referenc" in combined or "linked" in combined
+    # Coverage metric meaning should be documented in the output.
+    assert "coverage" in combined

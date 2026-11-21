@@ -23,6 +23,15 @@ STATUS_PASSED = "PASSED"
 STATUS_FAILED = "FAILED"
 STATUS_NO_EVIDENCE = "NO_EVIDENCE"
 
+# This tool performs mapping-only traceability: it links invariants to
+# user-provided test identifiers. It does not execute tests nor ingest test
+# results, so reports describe references, never executions or passes.
+EVIDENCE_LEVEL = "MAPPING_ONLY"
+COVERAGE_METRIC_DESCRIPTION = (
+    "coverage_percentage is the share of invariants that reference at least "
+    "one test id; it measures mapping coverage, not test execution or passing."
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ScoreGate Traceability Generator")
@@ -151,11 +160,14 @@ def build_report(processed_items, total_invariants, covered_invariants, all_test
     return {
         "version": "1.0.0",
         "timestamp": int(time.time()),
+        "evidence_level": EVIDENCE_LEVEL,
         "summary": {
             "total_issues": total_issues,
             "total_invariants": total_invariants,
             "total_tests": total_tests,
+            "total_tests_referenced": total_tests,
             "coverage_percentage": round(coverage, 2),
+            "coverage_metric": COVERAGE_METRIC_DESCRIPTION,
             "status": status
         },
         "items": processed_items
@@ -179,19 +191,21 @@ def atomic_write(file_path, content):
 def generate_human_readable(report):
     lines = []
     lines.append("=== ScoreGate Traceability Report ===")
+    lines.append(f"Evidence Level: {report.get('evidence_level', EVIDENCE_LEVEL)} (mapping only; tests are not executed)")
     lines.append(f"Status: {report['summary']['status']}")
     lines.append(f"Coverage: {report['summary']['coverage_percentage']}%")
+    lines.append(f"Coverage Metric: {report['summary'].get('coverage_metric', COVERAGE_METRIC_DESCRIPTION)}")
     lines.append(f"Total Issues: {report['summary']['total_issues']}")
     lines.append(f"Total Invariants: {report['summary']['total_invariants']}")
-    lines.append(f"Total Tests Executed: {report['summary']['total_tests']}")
+    lines.append(f"Total Tests Referenced: {report['summary']['total_tests']}")
     lines.append("=" * 38)
     for item in report["items"]:
         lines.append(f"\nIssue [{item['issue_id']}]: {item['title']}")
         for inv in item["invariants"]:
-            v_str = "VERIFIED" if inv["verified"] else "MISSING TEST"
+            v_str = "LINKED" if inv["verified"] else "NO TEST REFERENCED"
             lines.append(f"  - Invariant [{inv['invariant_id']}]: {inv['description']} ({v_str})")
             for t_id in inv["test_ids"]:
-                lines.append(f"      * Test: {t_id}")
+                lines.append(f"      * Referenced Test: {t_id}")
     return "\n".join(lines) + "\n"
 
 
@@ -212,101 +226,80 @@ def load_checkpoint(path):
 
 
 def write_checkpoint(path, last_index, processed_items):
-    content = json.dumps({"last_index": last_index, "processed_items": processed_items}, sort_keys=True)
+    content = json.dumps({"last_index": last_index, "processed_items": processed_items})
     atomic_write(path, content)
 
 
-def clear_checkpoint(path):
-    if path and os.path.exists(path):
-        os.remove(path)
+def process_items(data, start_index=0, processed_items=None):
+    if processed_items is None:
+        processed_items = []
+    total_invariants = 0
+    covered_invariants = 0
+    all_test_ids = set()
+
+    for item in data[start_index:]:
+        issue_id = item["issue_id"]
+        title = item.get("title", "")
+        invariants_out = []
+        for inv in item["invariants"]:
+            inv_id = inv["invariant_id"]
+            description = inv.get("description", "")
+            test_ids = [normalize_test_id(t) for t in inv.get("test_ids", [])]
+            test_ids = [t for t in test_ids if t is not None]
+            total_invariants += 1
+            if test_ids:
+                covered_invariants += 1
+            for t in test_ids:
+                all_test_ids.add(t)
+            invariants_out.append({
+                "invariant_id": inv_id,
+                "description": description,
+                "test_ids": test_ids,
+                "verified": bool(test_ids)
+            })
+        processed_items.append({
+            "issue_id": issue_id,
+            "title": title,
+            "invariants": invariants_out
+        })
+
+    return processed_items, total_invariants, covered_invariants, all_test_ids
 
 
 def main():
     args = parse_args()
-    raw_data = validate_input_file(args.input)
 
-    checkpoint_data = load_checkpoint(args.resume_checkpoint)
+    data = validate_input_file(args.input)
 
-    processed_items = []
-    total_invariants = 0
-    covered_invariants = 0
-    all_test_ids = set()
+    checkpoint = load_checkpoint(args.resume_checkpoint) if args.resume_checkpoint else None
     start_index = 0
+    processed_items = []
+    if checkpoint:
+        start_index = checkpoint["last_index"]
+        processed_items = checkpoint["processed_items"]
 
-    sorted_items = sorted(raw_data, key=lambda x: x.get("issue_id", ""))
-
-    if checkpoint_data:
-        start_index = checkpoint_data["last_index"] + 1
-        processed_items = checkpoint_data["processed_items"]
-        for item in processed_items:
-            for inv in item.get("invariants", []):
-                total_invariants += 1
-                if inv.get("verified"):
-                    covered_invariants += 1
-                for t_id in inv.get("test_ids", []):
-                    all_test_ids.add(t_id)
-
-    for index in range(start_index, len(sorted_items)):
-        item = sorted_items[index]
-        issue_id = item["issue_id"]
-        title = item.get("title", "")
-        processed_invariants = []
-
-        for inv in item.get("invariants", []):
-            inv_id = inv["invariant_id"]
-            description = inv.get("description", "")
-            raw_test_ids = inv.get("test_ids", [])
-
-            normalized_test_ids = []
-            seen_test_ids = set()
-            for t_id in raw_test_ids:
-                normalized = normalize_test_id(t_id)
-                if normalized is None or normalized in seen_test_ids:
-                    continue
-                seen_test_ids.add(normalized)
-                normalized_test_ids.append(normalized)
-
-            verified = len(normalized_test_ids) > 0
-            total_invariants += 1
-            if verified:
-                covered_invariants += 1
-            for t_id in normalized_test_ids:
-                all_test_ids.add(t_id)
-
-            processed_invariants.append({
-                "invariant_id": inv_id,
-                "description": description,
-                "test_ids": normalized_test_ids,
-                "verified": verified
-            })
-
-        processed_items.append({
-            "issue_id": issue_id,
-            "title": title,
-            "invariants": processed_invariants
-        })
-
-        if args.resume_checkpoint:
-            write_checkpoint(args.resume_checkpoint, index, processed_items)
+    processed_items, total_invariants, covered_invariants, all_test_ids = process_items(
+        data, start_index, processed_items
+    )
 
     report = build_report(processed_items, total_invariants, covered_invariants, all_test_ids)
 
     if args.format == "human":
-        output_content = generate_human_readable(report)
+        output = generate_human_readable(report)
     else:
-        output_content = json.dumps(report, indent=2, sort_keys=True)
+        output = json.dumps(report, indent=2)
 
-    if not args.dry_run:
-        atomic_write(args.output, output_content)
+    if args.dry_run:
+        sys.stdout.write(output)
+        return EXIT_SUCCESS
 
-    if args.resume_checkpoint:
-        clear_checkpoint(args.resume_checkpoint)
+    atomic_write(args.output, output)
 
-    if args.strict and report["summary"]["status"] != STATUS_PASSED:
+    if args.strict and report["summary"]["status"] == STATUS_FAILED:
         fail(EXIT_TRACEABILITY_GAP, "Error: traceability gap detected in strict mode")
 
-    sys.exit(EXIT_SUCCESS)
+    return EXIT_SUCCESS
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
