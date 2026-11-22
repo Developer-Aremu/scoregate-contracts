@@ -9307,6 +9307,14 @@ impl ScoreGateScoreContract {
     /// `[MIN_COOLDOWN_SECS, MAX_COOLDOWN_SECS]` (1 minute – 24 hours).
     /// Admin only.
     ///
+    /// **Immediate legacy path.** The new cooldown is in force as soon as this call returns, and
+    /// the only event is `cd_upd`. It creates no pending proposal, so `apply_param_change` has
+    /// nothing to apply afterwards; a pending proposal made with
+    /// [`Self::propose_cooldown_change`] is superseded and removed, so it cannot overwrite this
+    /// value later. Use [`Self::propose_cooldown_change`] for a change that takes effect after the
+    /// time lock. (Before this separation the call also stored a time-locked proposal that
+    /// re-applied the same value; its effect on the cooldown is unchanged.)
+    ///
     /// # Examples
     ///
     /// ```
@@ -9336,6 +9344,44 @@ impl ScoreGateScoreContract {
         }
         Self::require_admin_auth(&env, &admin_signers)?;
         let key = symbol_short!("cooldown");
+        if storage::has_pending_param_change(&env, &key) {
+            storage::clear_pending_param_change(&env, &key);
+            storage::clear_review_approvals(&env, &key);
+        }
+        storage::set_cooldown_secs(&env, secs);
+        events::cooldown_updated(&env, secs);
+        Ok(())
+    }
+
+    /// Proposes a new cooldown that takes effect only after the parameter-change delay
+    /// (`get_param_change_delay()`). Nothing changes now: `get_cooldown()` keeps returning the
+    /// current value until [`Self::apply_param_change`] is called for the `cooldown` key at or after
+    /// `apply_after`, which writes the value and emits `pc_appl` and `cd_upd`. The proposal emits
+    /// `pc_prop` and is the only pending state. Admin only.
+    ///
+    /// This is the delayed counterpart of [`Self::set_cooldown`], which applies immediately.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has no admin yet.
+    /// - [`Error::InvalidCooldown`] if `secs` is outside
+    ///   `[MIN_COOLDOWN_SECS, MAX_COOLDOWN_SECS]`.
+    /// - [`Error::ParamChangeAlreadyPending`] if a cooldown proposal is already pending.
+    pub fn propose_cooldown_change(
+        env: Env,
+        admin_signers: Vec<Address>,
+        secs: u64,
+    ) -> Result<(), Error> {
+        if !storage::has_admin(&env) {
+            return Err(Error::NotInitialized);
+        }
+        if !(constants::MIN_COOLDOWN_SECS..=constants::MAX_COOLDOWN_SECS).contains(&secs) {
+            return Err(Error::InvalidCooldown);
+        }
+        Self::require_admin_auth(&env, &admin_signers)?;
+        let key = symbol_short!("cooldown");
+        if storage::has_pending_param_change(&env, &key) {
+            return Err(Error::ParamChangeAlreadyPending);
+        }
         let now = env.ledger().timestamp();
         let apply_after = now.saturating_add(storage::get_param_change_delay(&env));
         storage::set_pending_param_change(
@@ -9349,8 +9395,6 @@ impl ScoreGateScoreContract {
         );
         storage::clear_review_approvals(&env, &key);
         events::param_change_proposed(&env, &key, apply_after);
-        storage::set_cooldown_secs(&env, secs);
-        events::cooldown_updated(&env, secs);
         Ok(())
     }
 
