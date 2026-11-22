@@ -51,6 +51,9 @@ mod test_parameter_governance;
 mod test_two_person_control;
 
 #[cfg(test)]
+mod error_coverage;
+
+#[cfg(test)]
 mod test_batch_ttl_optimization;
 
 #[cfg(test)]
