@@ -50,6 +50,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
 
+  doc-links:
+    name: Local documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Relative links between Markdown files must resolve to files in the repository. The checker
+      # reads files only: external URLs and anchors are not followed, so it needs no network.
+      - name: Check local Markdown links
+        run: python3 scripts/check-doc-links.py
+
   contract-build-lints:
     name: Contract-only dead-code check
     runs-on: ubuntu-latest
