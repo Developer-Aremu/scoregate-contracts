@@ -15,21 +15,62 @@ The --format replay adapter resolves the incompatibility described in issue #275
 fetch_testnet_snapshot.py previously emitted raw RPC records, but tools/replay
 expects SnapshotEntry { wallet, asset_pair, trades }. The adapter parses Soroban
 event topics to extract those fields from every score-submission event.
+
+Bounded exports (issue #350):
+  Every RPC request has a configurable deadline (--request-timeout) so a stalled
+  endpoint terminates with an actionable error instead of hanging forever.
+  Pagination is bounded by configurable page, record, and byte ceilings
+  (--max-pages, --max-records, --max-bytes). When any ceiling is hit the export
+  is reported as TRUNCATED (non-zero exit) so partial data is never presented as
+  a complete, successful export.
+
+Atomic export (issue #351):
+  Records are written to a temporary sibling file and the final output path is
+  only replaced (via os.replace) after conversion and close succeed. A failed
+  conversion or write leaves any previously valid export untouched and cleans
+  up the temporary file.
 """
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
 DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org/"
 
+# Default ceilings keep a runaway ledger range from exhausting local memory.
+DEFAULT_REQUEST_TIMEOUT = 30.0
+DEFAULT_MAX_PAGES = 1000
+DEFAULT_MAX_RECORDS = 100000
+DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 
-def fetch_events(rpc_url, contract_id, start_ledger, limit=100):
+
+class ExportTruncated(Exception):
+    """Raised when a configured page/record/byte ceiling is reached."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def fetch_events(rpc_url, contract_id, start_ledger, limit=100,
+                 request_timeout=DEFAULT_REQUEST_TIMEOUT,
+                 max_pages=DEFAULT_MAX_PAGES,
+                 max_records=DEFAULT_MAX_RECORDS,
+                 max_bytes=DEFAULT_MAX_BYTES):
+    """Fetch events with bounded request deadlines and collection ceilings.
+
+    Returns (events, truncated_reason). ``truncated_reason`` is None for a
+    complete export, or a human-readable string when a ceiling was hit.
+    """
     events = []
     cursor = None
+    pages = 0
+    total_bytes = 0
 
     headers = {
         "Content-Type": "application/json",
@@ -37,6 +78,9 @@ def fetch_events(rpc_url, contract_id, start_ledger, limit=100):
     }
 
     while True:
+        if pages >= max_pages:
+            return events, f"page ceiling reached (--max-pages={max_pages})"
+
         params = {
             "filters": [{"type": "contract"}]
         }
@@ -60,10 +104,31 @@ def fetch_events(rpc_url, contract_id, start_ledger, limit=100):
         req = urllib.request.Request(rpc_url, data=data, headers=headers)
 
         try:
-            with urllib.request.urlopen(req) as response:
-                res = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=request_timeout) as response:
+                body = response.read()
         except urllib.error.URLError as e:
-            print(f"RPC Error: {e}", file=sys.stderr)
+            print(
+                f"RPC Error: {e} (request timed out after {request_timeout}s; "
+                f"raise --request-timeout or check the endpoint)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except TimeoutError:
+            print(
+                f"RPC Error: request timed out after {request_timeout}s; "
+                f"raise --request-timeout or check the endpoint",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        total_bytes += len(body)
+        if total_bytes > max_bytes:
+            return events, f"byte ceiling reached (--max-bytes={max_bytes})"
+
+        try:
+            res = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            print(f"RPC Error: malformed response: {e}", file=sys.stderr)
             sys.exit(1)
 
         if "error" in res:
@@ -75,7 +140,11 @@ def fetch_events(rpc_url, contract_id, start_ledger, limit=100):
         if not page_events:
             break
 
+        pages += 1
         events.extend(page_events)
+
+        if len(events) > max_records:
+            return events, f"record ceiling reached (--max-records={max_records})"
 
         # Check cursor for pagination
         latest_cursor = result.get("cursor")
@@ -84,7 +153,7 @@ def fetch_events(rpc_url, contract_id, start_ledger, limit=100):
         cursor = latest_cursor
         time.sleep(0.1)  # Small delay to respect rate limits
 
-    return events
+    return events, None
 
 
 def convert_event_to_snapshot_entry(event):
@@ -134,6 +203,42 @@ def convert_event_to_snapshot_entry(event):
     }
 
 
+def write_snapshot_atomic(output_path, events, output_format):
+    """Write events to ``output_path`` atomically.
+
+    Records are streamed to a temporary sibling file. The final output path is
+    only replaced (via os.replace) after every record has been converted and
+    written and the temporary file has been closed successfully. On any
+    conversion or write error the temporary file is removed and the previous
+    export (if any) is left untouched.
+    """
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=os.path.basename(output_path) + ".",
+        suffix=".tmp",
+        dir=output_dir,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for event in events:
+                if output_format == "replay":
+                    record = convert_event_to_snapshot_entry(event)
+                    if record is None:
+                        continue
+                else:
+                    record = event
+                f.write(json.dumps(record) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Export Soroban RPC events to NDJSON snapshot format."
@@ -156,43 +261,45 @@ def main():
             "that tools/replay can ingest without deserialization errors."
         ),
     )
-
+    parser.add_argument("--request-timeout", type=float,
+                        default=DEFAULT_REQUEST_TIMEOUT,
+                        help="Per-request deadline in seconds")
+    parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES,
+                        help="Maximum number of RPC pages to fetch")
+    parser.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS,
+                        help="Maximum number of records to collect")
+    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES,
+                        help="Maximum total response bytes to collect")
     args = parser.parse_args()
 
-    print(f"Fetching events from {args.rpc_url} starting at ledger {args.start_ledger}...")
-    raw_events = fetch_events(args.rpc_url, args.contract_id, args.start_ledger)
-    print(f"Fetched {len(raw_events)} events.")
+    print(f"Fetching events from {args.rpc_url}...", file=sys.stderr)
+    events, truncated_reason = fetch_events(
+        args.rpc_url,
+        args.contract_id,
+        args.start_ledger,
+        request_timeout=args.request_timeout,
+        max_pages=args.max_pages,
+        max_records=args.max_records,
+        max_bytes=args.max_bytes,
+    )
 
-    count = 0
-    skipped = 0
-    with open(args.output, "w") as f:
-        for item in raw_events:
-            if args.format == "raw":
-                ndjson_entry = {
-                    "event_id": item.get("id"),
-                    "ledger": item.get("ledger"),
-                    "ledger_closed_at": item.get("ledgerClosedAt"),
-                    "contract_id": item.get("contractId"),
-                    "tx_hash": item.get("txHash"),
-                    "topic": item.get("topic"),
-                    "value": item.get("value"),
-                    "in_successful_contract_call": item.get("inSuccessfulContractCall"),
-                }
-            else:
-                # replay format: convert to SnapshotEntry
-                ndjson_entry = convert_event_to_snapshot_entry(item)
-                if ndjson_entry is None:
-                    skipped += 1
-                    continue
+    print(f"Fetched {len(events)} events.", file=sys.stderr)
 
-            f.write(json.dumps(ndjson_entry) + "\n")
-            count += 1
+    try:
+        write_snapshot_atomic(args.output, events, args.format)
+    except Exception as e:
+        print(f"Export Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    fmt_note = f" (format={args.format}"
-    if args.format == "replay" and skipped:
-        fmt_note += f", {skipped} non-score events skipped"
-    fmt_note += ")"
-    print(f"Successfully exported {count} snapshot records to {args.output}{fmt_note}")
+    if truncated_reason:
+        print(
+            f"Export TRUNCATED: {truncated_reason}. "
+            f"Partial data written to {args.output}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    print(f"Snapshot written to {args.output}", file=sys.stderr)
 
 
 if __name__ == "__main__":
