@@ -165,7 +165,7 @@ Soroban contract errors are returned as `u32` discriminant values. When a transa
 
 | Code | Name | Description | When returned | Client action |
 |-----:|------|-------------|---------------|---------------|
-| 49 | `InvalidHysteresisMargin` | Margin exceeds the maximum (50) | `set_hysteresis_margin` with `margin > MAX_HYSTERESIS_MARGIN` (50) | Use a value in `[0, 50]`. `0` disables hysteresis. |
+| 49 | `InvalidHysteresisMargin` | Margin exceeds the maximum (50), or a margin and a risk threshold that cannot be exited | `set_hysteresis_margin` with `margin > MAX_HYSTERESIS_MARGIN` (50) or `margin >= risk_threshold`; `set_risk_threshold`, `propose_policy_bundle`, `apply_param_change(risk_thr)` and `apply_policy_bundle` with a threshold that is not above a nonzero active margin | Use a value in `[0, 50]`. `0` disables hysteresis. |
 
 ### Multi-model consensus scoring
 

@@ -3763,6 +3763,12 @@ impl ScoreGateScoreContract {
         Self::require_mandatory_reviewers_approved(&env, &key)?;
         match &pending.new_value {
             ParamValue::U32(v) if key == symbol_short!("risk_thr") => {
+                // The margin is changed immediately by `set_hysteresis_margin`, so it can differ
+                // from the one in force when this threshold was proposed. The proposal stays
+                // pending so the margin can be lowered and the change applied again.
+                if !Self::hysteresis_allows_threshold(*v, storage::get_hysteresis_margin(&env)) {
+                    return Err(Error::InvalidHysteresisMargin);
+                }
                 storage::set_risk_threshold(&env, *v)
             }
             ParamValue::U32(v) if key == symbol_short!("hist_dep") => {
@@ -3830,6 +3836,10 @@ impl ScoreGateScoreContract {
         if !(constants::MIN_COOLDOWN_SECS..=constants::MAX_COOLDOWN_SECS).contains(&cooldown_secs) {
             return Err(Error::InvalidCooldown);
         }
+        if !Self::hysteresis_allows_threshold(risk_threshold, storage::get_hysteresis_margin(&env))
+        {
+            return Err(Error::InvalidHysteresisMargin);
+        }
         Self::require_admin_auth(&env, &admin_signers)?;
         if storage::has_pending_policy_bundle(&env) {
             return Err(Error::ParamChangeAlreadyPending);
@@ -3866,6 +3876,13 @@ impl ScoreGateScoreContract {
         }
         let bundle_key = symbol_short!("pol_bdl");
         Self::require_mandatory_reviewers_approved(&env, &bundle_key)?;
+        // Re-check against the margin in force now; the bundle stays pending if it conflicts.
+        if !Self::hysteresis_allows_threshold(
+            pending.bundle.risk_threshold,
+            storage::get_hysteresis_margin(&env),
+        ) {
+            return Err(Error::InvalidHysteresisMargin);
+        }
         storage::set_risk_threshold(&env, pending.bundle.risk_threshold);
         storage::set_cooldown_secs(&env, pending.bundle.cooldown_secs);
         storage::clear_pending_policy_bundle(&env);
@@ -8249,6 +8266,14 @@ impl ScoreGateScoreContract {
     /// value will emit a `threshold_breached` event on every submission.
     /// Admin only.
     ///
+    /// A threshold that the active hysteresis margin could not exit from is rejected (see
+    /// [`Self::set_hysteresis_margin`]): with a margin above 0 the threshold must be greater than
+    /// the margin. The same rule is checked again when the change is applied.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidHysteresisMargin`] if the active margin is above 0 and not below
+    ///   `threshold`, which would leave no score that clears the high-risk band.
+    ///
     /// # Examples
     ///
     /// ```
@@ -8278,6 +8303,9 @@ impl ScoreGateScoreContract {
         }
         if threshold > constants::MAX_SCORE {
             return Err(Error::InvalidScore);
+        }
+        if !Self::hysteresis_allows_threshold(threshold, storage::get_hysteresis_margin(&env)) {
+            return Err(Error::InvalidHysteresisMargin);
         }
         Self::require_admin_auth(&env, &admin_signers)?;
         let key = symbol_short!("risk_thr");
@@ -8463,7 +8491,9 @@ impl ScoreGateScoreContract {
     /// - [`Error::NotInitialized`] if the contract has no admin yet.
     /// - [`Error::InvalidHysteresisMargin`] if `margin` exceeds
     ///   [`constants::MAX_HYSTERESIS_MARGIN`] (50) or is `>=` the current
-    ///   risk threshold (which would invert the exit band).
+    ///   risk threshold (which would invert the exit band). Threshold changes
+    ///   (`set_risk_threshold`, `apply_param_change` for `risk_thr`, and policy
+    ///   bundles) are held to the same rule against the margin in force.
     /// - [`Error::Unauthorized`] if the caller is not the admin.
     ///
     /// # Examples
@@ -11270,6 +11300,14 @@ impl ScoreGateScoreContract {
     /// - Currently in band AND `score >= (risk_threshold - margin)` → stay in
     ///   band (hysteresis: score dropped but not below the exit boundary).
     /// - Not in band AND `score < risk_threshold` → nothing to do.
+    /// Whether `margin` leaves a band exit that a score can reach under `risk_threshold`. A wallet
+    /// leaves the high-risk band for `score < risk_threshold - margin`, which no score satisfies once
+    /// a nonzero margin reaches the threshold, so such a pair would trap wallets in the band. A margin
+    /// of 0 has no hysteresis, so it never conflicts.
+    fn hysteresis_allows_threshold(risk_threshold: u32, margin: u32) -> bool {
+        margin == 0 || margin < risk_threshold
+    }
+
     fn evaluate_risk_band(
         env: &Env,
         wallet: &Address,

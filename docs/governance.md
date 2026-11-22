@@ -348,7 +348,10 @@ documented above.
 Both fields are validated before anything is stored: an invalid
 `risk_threshold` (>100) or `cooldown_secs` (outside
 `[MIN_COOLDOWN_SECS, MAX_COOLDOWN_SECS]`) rejects the whole proposal, so
-there is no partial proposal. `apply_policy_bundle` writes both fields in the
+there is no partial proposal. A `risk_threshold` that is not above the active
+hysteresis margin is rejected as well (see
+[Hysteresis and risk threshold changes](#hysteresis-and-risk-threshold-changes)),
+and the same check runs again in `apply_policy_bundle`. `apply_policy_bundle` writes both fields in the
 same call, so no caller can observe one field updated while the other is
 still pending. If an erroneous bundle is proposed, the admin multi-sig can
 revoke it prior to execution via `veto_policy_bundle`.
@@ -368,6 +371,27 @@ time-locked `ParamChangeProposal` keyed by parameter symbol (`risk_thr`,
 `apply_after` has elapsed, calling `apply_param_change(key)` applies the new
 parameter value, clears the pending entry, and emits `pc_appl`
 (`param_change_applied`) carrying `(key, new_value)`.
+
+### Hysteresis and risk threshold changes
+
+A wallet leaves the high-risk band for `score < risk_threshold - hysteresis_margin`.
+When the margin is not below the threshold no score satisfies that, so wallets
+already in the band could never leave it. Every path that changes the threshold
+therefore keeps `margin < risk_threshold` whenever the margin is above 0, and
+fails with `InvalidHysteresisMargin` otherwise:
+
+| Path | When it is checked |
+|------|--------------------|
+| `set_risk_threshold` | at proposal, against the margin then in force |
+| `propose_policy_bundle` | at proposal, against the margin then in force |
+| `apply_param_change(risk_thr)` | at execution, against the margin in force now |
+| `apply_policy_bundle` | at execution, against the margin in force now |
+| `set_hysteresis_margin` | against the current threshold (unchanged) |
+
+The margin changes immediately while a threshold change waits out its time lock,
+so the check at execution is the one that closes the gap. A change that fails it
+stays pending: lower the margin with `set_hysteresis_margin` and apply it again,
+or let it be vetoed. A margin of 0 has no hysteresis and never conflicts.
 
 ## Mandatory Technical Reviewers
 
