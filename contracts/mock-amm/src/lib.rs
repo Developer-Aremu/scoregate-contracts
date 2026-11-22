@@ -9,6 +9,21 @@
 //! can call ScoreGate gate functions and refuse risky wallets, mirroring the
 //! patterns in `examples/amm_gate.rs` and `examples/amm_gate_example.rs`.
 //!
+//! ## Fail-closed gate result vs. invocation failure
+//!
+//! A gate function returning `bool` only describes the *decision* for a
+//! reachable, compatible oracle: `false` means "refuse this wallet" (fail
+//! closed). It does **not** guarantee the cross-contract call itself cannot
+//! trap. If the configured oracle address is absent, is not a ScoreGate
+//! deployment, or exposes an incompatible interface, the invocation fails
+//! (trap / decode error) before any `bool` is produced. Consumers must treat
+//! that as a distinct failure mode and handle it explicitly — e.g. via the
+//! generated `try_*` client — rather than assuming the call always succeeds.
+//!
+//! Note that the oracle address is caller-supplied (`initialize` /
+//! `set_risk_oracle`), so the gate target may be missing or incompatible at
+//! runtime; the mock surfaces this as `MockAmmError::OracleUnavailable`.
+//!
 //! The mock intentionally focuses on confidence-gated access control. Real
 //! integrations should layer their own max-age and pause-state checks on top
 //! of the ScoreGate gate so a stale-but-safe score cannot bypass a high-value
