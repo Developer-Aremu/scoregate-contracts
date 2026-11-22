@@ -22,6 +22,7 @@ set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 NETWORK="${1:?ERROR: network argument is required (testnet|futurenet)}"
 ADMIN_IDENTITY="${2:?ERROR: admin-identity argument is required}"
 SERVICE_ADDRESS="${3:?ERROR: service-address argument is required}"
+SERVICE_IDENTITY="${4:-$ADMIN_IDENTITY}"
 
 WASM_PATH="$PROJECT_ROOT/target/wasm32-unknown-unknown/release/scoregate_score.wasm"
 OPTIMIZED_WASM_PATH="$PROJECT_ROOT/target/wasm32-unknown-unknown/release/scoregate_score.optimized.wasm"
@@ -167,8 +168,8 @@ else
 fi
 
 if echo "$CANARY_TEST_RESULT" | grep -q "CANARY_SUBMIT_FAILED\|Error"; then
-  log "WARNING: Canary test score submission reported: $CANARY_TEST_RESULT"
-  log "This may be expected if a service key or attestation is required."
+  log "ERROR: Canary test score submission failed: $CANARY_TEST_RESULT"
+  exit 1
 else
   log "Canary test score submitted successfully"
 fi
@@ -190,6 +191,14 @@ else
 fi
 
 log "Canary test score result: $CANARY_SCORE"
+if [ "$CANARY_SCORE" = "SCORE_NOT_FOUND" ]; then
+  log "ERROR: Canary score retrieval failed: SCORE_NOT_FOUND"
+  exit 1
+fi
+if ! echo "$CANARY_SCORE" | grep -q "50"; then
+  log "ERROR: Canary score verification failed: expected score 50, got $CANARY_SCORE"
+  exit 1
+fi
 
 # ── Canary summary ────────────────────────────────────────────────────
 echo ""
