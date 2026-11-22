@@ -18,6 +18,14 @@ jobs:
       - name: Run deploy.sh manifest and drift tests
         run: bash tests/deploy/test_deploy.sh
 
+  bench-manifest:
+    name: Benchmark manifest check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every Criterion benchmark disables the default harness
+        run: bash scripts/check-bench-manifest.sh
+
   fmt:
     name: Format check
     runs-on: ubuntu-latest

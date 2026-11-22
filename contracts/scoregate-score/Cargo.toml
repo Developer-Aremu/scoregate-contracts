@@ -83,6 +83,26 @@ name = "estimate_unique_wallets"
 harness = false
 path = "benches/estimate_unique_wallets.rs"
 
+[[bench]]
+name = "entry_point_budgets"
+harness = false
+path = "benches/entry_point_budgets.rs"
+
+[[bench]]
+name = "get_score_histogram"
+harness = false
+path = "benches/get_score_histogram.rs"
+
+[[bench]]
+name = "get_interpolated_score"
+harness = false
+path = "benches/get_interpolated_score.rs"
+
+[[bench]]
+name = "query_risk_gate_relative"
+harness = false
+path = "benches/query_risk_gate_relative.rs"
+
 [features]
 testutils = ["soroban-sdk/testutils"]
 
