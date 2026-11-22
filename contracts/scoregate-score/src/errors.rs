@@ -105,6 +105,11 @@ impl Error {
     /// Returned when an invalid target percentile is provided (must be 50-99).
     pub const InvalidPercentile: Error = Error::InvalidThreshold;
 
+    /// Returned by `set_pair_correlation` when the coefficient is outside
+    /// `[MIN_PAIR_CORRELATION, MAX_PAIR_CORRELATION]`. Reused discriminant: the enum is already at
+    /// the 50-variant XDR limit.
+    pub const InvalidCorrelation: Error = Error::InvalidThreshold;
+
     pub const ParameterProposalNotFound: Error = Error::ScoreNotFound;
     pub const ParameterProposalNotReady: Error = Error::UpgradeNotReady;
     pub const ParameterProposalVetoPeriodEnded: Error = Error::QuorumFailureWindowNotElapsed;
