@@ -79,10 +79,14 @@ jobs:
       - name: Run production acceptance suite
         run: scripts/production-acceptance.sh --output target/production-readiness-report.md
       - name: Upload production readiness report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: production-readiness-report
-          path: target/production-readiness-report.md
+          path: |
+            target/production-readiness-report.md
+            target/production-acceptance/**
+          if-no-files-found: warn
           retention-days: 14
 
   error-discriminants:

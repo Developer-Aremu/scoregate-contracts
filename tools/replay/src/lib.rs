@@ -1,4 +1,5 @@
-use anyhow::{anyhow, bail, Context, Result};
+pub mod wasm_analysis;
+use anyhow::{anyhow, bail, Result};
 use scoregate_score::CONFIG_DRIFT_MANIFEST_FIELDS;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -185,43 +186,69 @@ pub fn recommended_manifest_template() -> Value {
     Value::Object(map)
 }
 
-/// Usage text for the `config-drift` subcommand.
-pub const CONFIG_DRIFT_USAGE: &str = "Usage: replay config-drift <approved.json> <observed.json>
-       replay config-drift --template
-       replay config-drift --help
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
 
-Compares an approved configuration manifest with an observed one and prints a JSON report.
-
-Exit status:
-  0  every mandatory field is present, valid and equal
-  1  drift, or an incomplete manifest, needs review
-  2  usage error, unreadable file or malformed JSON";
-
-/// Reads a manifest file, naming the path in every error.
-pub fn load_manifest(path: &Path) -> Result<Value> {
-    let raw = fs::read_to_string(path).with_context(|| format!("cannot read manifest {}", path.display()))?;
-    parse_manifest_json(&raw).with_context(|| format!("invalid manifest {}", path.display()))
-}
-
-/// Runs `replay config-drift <args>` and returns the exit status. `args` are the arguments after the
-/// subcommand name. Output goes to `out`; an error means a usage mistake or an unreadable manifest.
-pub fn run_config_drift(args: &[String], out: &mut impl Write) -> Result<i32> {
-    match args {
-        [flag] if flag == "--help" || flag == "-h" => {
-            writeln!(out, "{}", CONFIG_DRIFT_USAGE)?;
-            Ok(EXIT_NO_DRIFT)
+    fn build_manifest(entries: &[(&str, Value)]) -> Value {
+        let mut map = Map::new();
+        for (key, value) in entries {
+            map.insert((*key).into(), value.clone());
         }
-        [flag] if flag == "--template" => {
-            writeln!(out, "{}", serde_json::to_string_pretty(&recommended_manifest_template())?)?;
-            Ok(EXIT_NO_DRIFT)
-        }
-        [approved, observed] if !approved.starts_with('-') && !observed.starts_with('-') => {
-            let approved = load_manifest(Path::new(approved))?;
-            let observed = load_manifest(Path::new(observed))?;
-            let report = compare_config_manifests(&approved, &observed)?;
-            writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
-            Ok(if report.status == STATUS_OK { EXIT_NO_DRIFT } else { EXIT_DRIFT })
-        }
-        _ => bail!("expected <approved.json> <observed.json>, --template or --help\n\n{}", CONFIG_DRIFT_USAGE),
+        Value::Object(map)
+    }
+
+    #[test]
+    fn equivalent_maps_in_different_orders_produce_identical_reports() {
+        let approved_a = build_manifest(&[
+            ("alpha", json!(1)),
+            ("beta", json!(2)),
+            ("gamma", json!(3)),
+            ("delta", json!(4)),
+        ]);
+        let approved_b = build_manifest(&[
+            ("delta", json!(4)),
+            ("gamma", json!(3)),
+            ("beta", json!(2)),
+            ("alpha", json!(1)),
+        ]);
+
+        let observed_a = build_manifest(&[
+            ("alpha", json!(10)),
+            ("beta", json!(20)),
+            ("gamma", json!(30)),
+            ("delta", json!(40)),
+        ]);
+        let observed_b = build_manifest(&[
+            ("gamma", json!(30)),
+            ("alpha", json!(10)),
+            ("delta", json!(40)),
+            ("beta", json!(20)),
+        ]);
+
+        let report_a = compare_config_manifests(&approved_a, &observed_a).unwrap();
+        let report_b = compare_config_manifests(&approved_b, &observed_b).unwrap();
+
+        let serialized_a = serde_json::to_string(&report_a).unwrap();
+        let serialized_b = serde_json::to_string(&report_b).unwrap();
+
+        assert_eq!(serialized_a, serialized_b);
+        assert_eq!(report_a, report_b);
+    }
+
+    #[test]
+    fn differing_states_still_report_expected_differences() {
+        let approved = build_manifest(&[("alpha", json!(1)), ("beta", json!(2))]);
+        let observed = build_manifest(&[("alpha", json!(1)), ("beta", json!(99))]);
+
+        let report = compare_config_manifests(&approved, &observed).unwrap();
+
+        assert_eq!(report.status, "drifted");
+        assert_eq!(report.diffs.len(), 1);
+        assert_eq!(report.diffs[0].field, "beta");
+        assert_eq!(report.diffs[0].status, "drift");
+        assert_eq!(report.diffs[0].expected, Some(json!(2)));
+        assert_eq!(report.diffs[0].observed, Some(json!(99)));
     }
 }

@@ -123,6 +123,15 @@ impl Error {
     pub const GateCallerNotInList: Error = Error::ScoreNotFound;
     pub const ParamChangeAlreadyPending: Error = Error::UpgradeAlreadyPending;
 
+    // ── Anti-flash-loan protection (issue #290) ─────────────────────────────
+    /// Returned when `FlashProtectionMode::Reject` is active and a submit is
+    /// detected in the same ledger as a gate read for the same wallet/pair.
+    /// This signals flash-loan sandwiching / same-ledger reentrancy, and is
+    /// deliberately distinct from `EpochClosed` so clients and indexers do
+    /// not misattribute the rejection to epoch lifecycle. Reused
+    /// discriminant: the enum is already at the 50-variant XDR limit.
+    pub const FlashLoanDetected: Error = Error::RateLimitExceeded;
+
     // ── Memory-exhaustion guards (#612) ─────────────────────────────────────
     /// Returned by `submit_scores_batch_attested` when `signers.len()`
     /// exceeds the current service set size, i.e. more entries than could
@@ -159,5 +168,5 @@ impl Error {
     // ── Contagion propagation bounds (Issue #55) ────────────────────────────
     /// Returned by `propagate_contagion` when `boost` exceeds
     /// `constants::MAX_CONTAGION_BOOST`.
-    pub const InvalidBoost: Error = Error::InvalidScore;
+    pub const InvalidContagionBoost: Error = Error::InvalidThreshold;
 }

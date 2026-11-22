@@ -844,3 +844,12 @@ Contributions are welcome. ScoreGate is an open-source public good built for the
 
 <!-- handsoff-issue-284 -->
 - #284: add_admin_signer and remove_admin_signer Omit Event Emissions and Governance Audit Chain Records
+
+<!-- handsoff-issue-373 -->
+- #373: Preserve map key and value types across generated bindings
+
+<!-- handsoff-issue-375 -->
+- #375: Enforce XDR integer ranges in runtime schema validators
+
+<!-- handsoff-issue-376 -->
+- #376: Align Python model handling of unknown fields with JSON Schema
