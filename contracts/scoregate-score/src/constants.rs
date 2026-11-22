@@ -175,19 +175,15 @@ pub const DEFAULT_DISPUTE_REVEAL_WINDOW_SECS: u64 = 600;
 /// Maximum finality buffer duration — 24 hours.
 pub const MAX_FINALITY_BUFFER_SECS: u64 = 86_400;
 
-// ── Governance proposal review approvals (issue #365) ────────────────────────
+// ── Cluster membership ────────────────────────────────────────────────────────
 
-/// Hard ceiling on the number of distinct proposal targets that may hold
-/// reviewer-approval state at any one time.
+/// Number of score buckets used to partition wallets into clusters.
 ///
-/// `approve_proposal_review` resolves the supplied target to an active
-/// proposal identity before writing; this bound caps the number of stored
-/// approval target keys so repeated arbitrary targets cannot grow instance
-/// state without limit. Records are retired when the proposal lifecycle
-/// completes (execute/cancel).
-pub const MAX_PROPOSAL_APPROVAL_TARGETS: u32 = 50;
+/// A wallet's cluster is derived from its score via
+/// `score / CLUSTER_BUCKET_WIDTH`, so scores `0..=9` map to cluster `0`,
+/// `10..=19` to cluster `1`, and so on up to `100` (cluster `10`).
+/// Assignment and membership enumeration must both use this same definition.
+pub const CLUSTER_BUCKET_WIDTH: u32 = 10;
 
-/// TTL (ledgers) applied to stored proposal approval records so completed
-/// records are reclaimed even if explicit cleanup is skipped.
-pub const PROPOSAL_APPROVAL_TTL_THRESHOLD: u32 = 518_400;
-pub const PROPOSAL_APPROVAL_TTL_EXTEND_TO: u32 = 777_600;
+/// Maximum number of members returned by a single `get_cluster_members` call.
+pub const MAX_CLUSTER_MEMBERS: u32 = 200;
