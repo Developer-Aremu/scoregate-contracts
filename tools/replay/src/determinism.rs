@@ -231,8 +231,21 @@ pub fn compare_results(
             result_b.metadata.memory_bytes,
         ),
     ] {
-        if let (Some(value_a), Some(value_b)) = (value_a, value_b) {
-            if value_a != value_b {
+        match (value_a, value_b) {
+            (Some(value_a), Some(value_b)) => {
+                if value_a != value_b {
+                    divergences.push(DeterminismError::ExecutionDivergence {
+                        host_version_a: result_a.host_version.clone(),
+                        host_version_b: result_b.host_version.clone(),
+                        reason: format!(
+                            "{} differs: {} vs {}",
+                            label, value_a, value_b
+                        ),
+                    });
+                }
+            }
+            (None, None) => {}
+            (value_a, value_b) => {
                 divergences.push(DeterminismError::ExecutionDivergence {
                     host_version_a: result_a.host_version.clone(),
                     host_version_b: result_b.host_version.clone(),
@@ -271,7 +284,7 @@ pub fn compare_results(
         }
     }
 
-    // Compare events
+    // Compare events, including unmatched trailing events
     let max_events = result_a.events.len().max(result_b.events.len());
     for index in 0..max_events {
         let event_a = result_a.events.get(index);
@@ -307,6 +320,13 @@ pub fn compare_results(
         divergences,
         state_differences,
         event_differences,
+    }
+}
+
+fn format_optional<T: std::fmt::Display>(value: Option<T>) -> String {
+    match value {
+        Some(value) => value.to_string(),
+        None => "<missing>".to_string(),
     }
 }
 

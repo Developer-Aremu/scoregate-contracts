@@ -21,6 +21,19 @@ MAX_TESTS_PER_INVARIANT = 200
 SUPPORTED_INPUT_VERSIONS = {"1.0.0"}
 CHECKPOINT_FORMAT_VERSION = 2
 
+STATUS_PASSED = "PASSED"
+STATUS_FAILED = "FAILED"
+STATUS_NO_EVIDENCE = "NO_EVIDENCE"
+
+# This tool performs mapping-only traceability: it links invariants to
+# user-provided test identifiers. It does not execute tests nor ingest test
+# results, so reports describe references, never executions or passes.
+EVIDENCE_LEVEL = "MAPPING_ONLY"
+COVERAGE_METRIC_DESCRIPTION = (
+    "coverage_percentage is the share of invariants that reference at least "
+    "one test id; it measures mapping coverage, not test execution or passing."
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ScoreGate Traceability Generator")
@@ -36,6 +49,22 @@ def parse_args():
 def fail(exit_code, message):
     sys.stderr.write(message + "\n")
     sys.exit(exit_code)
+
+
+def normalize_test_id(t_id):
+    """Return a normalized test identifier, or None if it is not meaningful.
+
+    Accepts nonblank strings and explicitly supported integers. Booleans are
+    rejected (bool is a subclass of int but is not a meaningful test id).
+    """
+    if isinstance(t_id, bool):
+        return None
+    if isinstance(t_id, str):
+        normalized = t_id.strip()
+        return normalized if normalized else None
+    if isinstance(t_id, int):
+        return str(t_id)
+    return None
 
 
 def validate_issue(item, index):
@@ -74,7 +103,7 @@ def validate_issue(item, index):
             fail(EXIT_CORRUPT_INPUT, f"Error: invariant '{inv_id}' in issue '{issue_id}' exceeds max test_ids of {MAX_TESTS_PER_INVARIANT}")
 
         for t_index, t_id in enumerate(test_ids):
-            if not isinstance(t_id, (str, int)):
+            if normalize_test_id(t_id) is None:
                 fail(EXIT_CORRUPT_INPUT, f"Error: invariant '{inv_id}' in issue '{issue_id}' has invalid test_id at index {t_index}")
 
     return issue_id
@@ -149,15 +178,23 @@ def build_report(processed_items, total_invariants, covered_invariants, all_test
     total_issues = len(processed_items)
     total_tests = len(all_test_ids)
     coverage = (covered_invariants / total_invariants * 100.0) if total_invariants > 0 else 0.0
-    status = "PASSED" if (total_invariants == covered_invariants) else "FAILED"
+    if total_invariants == 0:
+        status = STATUS_NO_EVIDENCE
+    elif covered_invariants == total_invariants:
+        status = STATUS_PASSED
+    else:
+        status = STATUS_FAILED
     return {
         "version": "1.0.0",
         "timestamp": int(time.time()),
+        "evidence_level": EVIDENCE_LEVEL,
         "summary": {
             "total_issues": total_issues,
             "total_invariants": total_invariants,
             "total_tests": total_tests,
+            "total_tests_referenced": total_tests,
             "coverage_percentage": round(coverage, 2),
+            "coverage_metric": COVERAGE_METRIC_DESCRIPTION,
             "status": status
         },
         "items": processed_items
@@ -181,19 +218,21 @@ def atomic_write(file_path, content):
 def generate_human_readable(report):
     lines = []
     lines.append("=== ScoreGate Traceability Report ===")
+    lines.append(f"Evidence Level: {report.get('evidence_level', EVIDENCE_LEVEL)} (mapping only; tests are not executed)")
     lines.append(f"Status: {report['summary']['status']}")
     lines.append(f"Coverage: {report['summary']['coverage_percentage']}%")
+    lines.append(f"Coverage Metric: {report['summary'].get('coverage_metric', COVERAGE_METRIC_DESCRIPTION)}")
     lines.append(f"Total Issues: {report['summary']['total_issues']}")
     lines.append(f"Total Invariants: {report['summary']['total_invariants']}")
-    lines.append(f"Total Tests Executed: {report['summary']['total_tests']}")
+    lines.append(f"Total Tests Referenced: {report['summary']['total_tests']}")
     lines.append("=" * 38)
     for item in report["items"]:
         lines.append(f"\nIssue [{item['issue_id']}]: {item['title']}")
         for inv in item["invariants"]:
-            v_str = "VERIFIED" if inv["verified"] else "MISSING TEST"
+            v_str = "LINKED" if inv["verified"] else "NO TEST REFERENCED"
             lines.append(f"  - Invariant [{inv['invariant_id']}]: {inv['description']} ({v_str})")
             for t_id in inv["test_ids"]:
-                lines.append(f"      * Test: {t_id}")
+                lines.append(f"      * Referenced Test: {t_id}")
     return "\n".join(lines) + "\n"
 
 
@@ -304,9 +343,9 @@ def main():
             total_invariants += 1
             if verified:
                 covered_invariants += 1
-            for t_id in test_ids:
-                all_test_ids.add(t_id)
-            processed_invariants.append({
+            for t in test_ids:
+                all_test_ids.add(t)
+            invariants_out.append({
                 "invariant_id": inv_id,
                 "description": description,
                 "verified": verified,
@@ -337,4 +376,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
