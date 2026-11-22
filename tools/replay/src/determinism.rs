@@ -1,5 +1,5 @@
-/// Replay determinism checks across host versions.
-/// Identifies semantic divergences in behavior between different Soroban host versions.
+//! Replay determinism checks across host versions.
+//! Identifies semantic divergences in behavior between different Soroban host versions.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
