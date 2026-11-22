@@ -138,6 +138,31 @@ if [ "$DRY_RUN" = false ]; then
   fi
 
   log "Rollback admin verified: $VERIFY_ADMIN"
+
+  # get_version and get_admin cannot tell the reviewed previous binary from another one, so
+  # compare the code the contract now runs with the WASM installed in Step 0.
+  ACTIVE_WASM_FILE=$(mktemp)
+  trap 'rm -f "$ACTIVE_WASM_FILE"' EXIT
+  if ! soroban contract fetch \
+    --id "$TARGET_CONTRACT_ID" \
+    --network "$NETWORK" \
+    --out-file "$ACTIVE_WASM_FILE" >/dev/null 2>&1; then
+    log "ERROR: Rollback verification failed — could not read the active contract code."
+    log "   Expected WASM hash: $PREVIOUS_WASM_HASH"
+    exit 1
+  fi
+
+  ACTIVE_WASM_HASH=$(sha256sum "$ACTIVE_WASM_FILE" | awk '{print $1}')
+  if [ -z "$ACTIVE_WASM_HASH" ] || [ "$ACTIVE_WASM_HASH" != "$PREVIOUS_WASM_HASH" ]; then
+    log "ERROR: Rollback verification failed — the active WASM is not the previous WASM."
+    log "   Expected WASM hash: $PREVIOUS_WASM_HASH"
+    log "   Observed WASM hash: ${ACTIVE_WASM_HASH:-<none>}"
+    exit 1
+  fi
+
+  log "Active WASM hash matches the previous WASM: $ACTIVE_WASM_HASH"
+else
+  echo "[dry-run] soroban contract fetch --id $TARGET_CONTRACT_ID --network $NETWORK --out-file <tmp> && sha256sum <tmp>  # must equal $PREVIOUS_WASM_HASH"
 fi
 
 # ── Step 5: Replay verification ───────────────────────────────
@@ -151,6 +176,7 @@ log "── Rollback complete ──"
 log "Network:              $NETWORK"
 log "Contract:             $TARGET_CONTRACT_ID"
 log "Previous WASM hash:   $PREVIOUS_WASM_HASH"
+log "Active WASM hash:     ${ACTIVE_WASM_HASH:-not checked (dry run)}"
 log "────────────────────────────────────────"
 echo ""
 log "IMPORTANT: Re-run full verification suite against the rolled-back contract."
