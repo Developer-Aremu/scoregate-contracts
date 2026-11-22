@@ -1628,6 +1628,7 @@ impl ScoreGateScoreContract {
                                 );
                             }
                             storage::update_model_stats(&env, ns.model_version, ns.score);
+                            Self::update_pair_volatility(&env, &ns.asset_pair, ns.score);
                             storage::update_historical_max_score(
                                 &env,
                                 &ns.wallet,
@@ -2066,6 +2067,7 @@ impl ScoreGateScoreContract {
                             storage::increment_total_wallets_scored(&env);
                         }
                         storage::update_model_stats(&env, sub.model_version, sub.score);
+                        Self::update_pair_volatility(&env, &sub.asset_pair, sub.score);
                         storage::update_historical_max_score(
                             &env,
                             &sub.wallet,
@@ -4572,10 +4574,11 @@ impl ScoreGateScoreContract {
     // ── Per-pair 24h score volatility index (#270) ────────────────────────────
 
     /// Returns the rolling score volatility index for `asset_pair`, scaled ×100.
-    /// The volatility is the population standard deviation of scores submitted
-    /// within the last `get_pair_volatility_window()` seconds, computed
-    /// incrementally via Welford's algorithm on every `submit_score`.
-    /// Returns `0` when fewer than 2 samples exist.
+    /// The volatility is the population standard deviation (rounded down) of the accepted scores
+    /// of the pair in the current series, computed incrementally via Welford's algorithm each time
+    /// a score is finalized. A series restarts when no score was accepted for the pair during the
+    /// last `get_pair_volatility_window()` seconds, and an expired series reads as `0` until the
+    /// next accepted score. Returns `0` when fewer than 2 samples exist.
     ///
     /// # Examples
     ///
@@ -4598,6 +4601,10 @@ impl ScoreGateScoreContract {
             Some(s) => s,
             None => return 0,
         };
+        let window = storage::get_pair_volatility_window(&env);
+        if env.ledger().timestamp() > state.last_updated.saturating_add(window) {
+            return 0;
+        }
         if state.count < 2 {
             return 0;
         }
@@ -12126,6 +12133,7 @@ impl ScoreGateScoreContract {
             storage::increment_total_wallets_scored(env);
         }
         storage::update_model_stats(env, risk_score.model_version, risk_score.score);
+        Self::update_pair_volatility(env, asset_pair, risk_score.score);
         storage::update_historical_max_score(env, wallet, asset_pair, risk_score.score);
         storage::update_histogram_on_write(env, previous_score, risk_score.score);
         Self::update_welford_correlation(env, wallet, asset_pair, risk_score.score);
@@ -12333,8 +12341,14 @@ impl ScoreGateScoreContract {
         false
     }
 
-    /// Incremental Welford update for per-pair score volatility.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    /// Incremental Welford update for per-pair score volatility. It runs exactly once for every
+    /// accepted observation, in the finalization path shared by single, consensus and
+    /// pending-commit submissions and in the two batch routes. Rejected submissions and scores
+    /// still held in escrow or pending do not reach it.
+    ///
+    /// Units: `mean_scaled` is the mean score ×1_000 and `m2_scaled` is the sum of squared
+    /// deviations ×1_000_000, which is what `get_pair_volatility` reads. The series restarts when
+    /// the previous observation is older than the volatility window.
     fn update_pair_volatility(env: &Env, asset_pair: &Symbol, score: u32) {
         use crate::types::PairVolatilityState;
         let now = env.ledger().timestamp();
@@ -12361,10 +12375,8 @@ impl ScoreGateScoreContract {
         let delta = score_scaled - state.mean_scaled;
         state.mean_scaled += delta / state.count;
         let delta2 = score_scaled - state.mean_scaled;
-        // m2_scaled accumulates in units of (score_unit × 1000)^2 / 1_000_000 = score_unit^2 × 1
-        // Keep m2_scaled as integer approximation: delta × delta2 / 1_000_000
-        state.m2_scaled =
-            state.m2_scaled.saturating_add((delta / 1_000).saturating_mul(delta2 / 1_000));
+        // Both deltas are in score × 1_000, so their product is in score² × 1_000_000.
+        state.m2_scaled = state.m2_scaled.saturating_add(delta.saturating_mul(delta2));
 
         storage::set_pair_volatility_state(env, asset_pair, &state);
     }
