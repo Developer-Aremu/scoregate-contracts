@@ -195,13 +195,21 @@ impl WasmBinaryAnalysis {
 
     /// Add module size information
     pub fn add_module(&mut self, name: &str, bytes: u64, category: SizeCategory) {
-        let percentage = (bytes as f64 / self.total_size as f64) * 100.0;
+        let percentage = if self.total_size > 0 {
+            (bytes as f64 / self.total_size as f64) * 100.0
+        } else {
+            0.0
+        };
         self.modules.push(ModuleSize { name: name.to_string(), bytes, percentage, category });
     }
 
     /// Add feature size information
     pub fn add_feature(&mut self, name: &str, bytes: u64, category: SizeCategory) {
-        let percentage = (bytes as f64 / self.total_size as f64) * 100.0;
+        let percentage = if self.total_size > 0 {
+            (bytes as f64 / self.total_size as f64) * 100.0
+        } else {
+            0.0
+        };
         self.features.push(ModuleSize { name: name.to_string(), bytes, percentage, category });
     }
 
@@ -245,7 +253,11 @@ pub fn compare_binaries(
         if let Some(prev_size) = module_map.get(&module.name) {
             if module.bytes > *prev_size {
                 let increase = module.bytes as i64 - *prev_size as i64;
-                let increase_percent = (increase as f64 / *prev_size as f64) * 100.0;
+                let increase_percent = if *prev_size > 0 {
+                    (increase as f64 / *prev_size as f64) * 100.0
+                } else {
+                    0.0
+                };
                 let severity = RegressionSeverity::from_percentage(increase_percent);
 
                 regressions.push(SizeRegression {
@@ -385,6 +397,9 @@ mod tests {
         assert_eq!(compute_static_memory(&segments), 66536);
         assert_eq!(static_memory_pages(compute_static_memory(&segments)), 2);
     }
+
+    #[test]
+    fn test_decrease_no_regression() {
         let mut prev = WasmBinaryAnalysis::new(1000000);
         prev.add_module("score", 500000, SizeCategory::Core);
 
@@ -393,5 +408,27 @@ mod tests {
 
         let comparison = compare_binaries(prev, curr);
         assert!(comparison.regressions.is_empty()); // Improvement, not regression
+    }
+
+    #[test]
+    fn test_zero_denominators_finite() {
+        let mut zero_analysis = WasmBinaryAnalysis::new(0);
+        zero_analysis.add_module("zero_mod", 100, SizeCategory::Core);
+        zero_analysis.add_feature("zero_feat", 50, SizeCategory::Feature);
+        assert_eq!(zero_analysis.modules[0].percentage, 0.0);
+        assert_eq!(zero_analysis.features[0].percentage, 0.0);
+        assert!(zero_analysis.modules[0].percentage.is_finite());
+        assert!(serde_json::to_string(&zero_analysis).is_ok());
+
+        let mut prev = WasmBinaryAnalysis::new(0);
+        prev.add_module("mod", 0, SizeCategory::Core);
+        let mut curr = WasmBinaryAnalysis::new(100);
+        curr.add_module("mod", 100, SizeCategory::Core);
+
+        let comparison = compare_binaries(prev, curr);
+        assert_eq!(comparison.total_percentage_change, 0.0);
+        assert_eq!(comparison.regressions[0].increase_percent, 0.0);
+        assert!(comparison.regressions[0].increase_percent.is_finite());
+        assert!(serde_json::to_string(&comparison).is_ok());
     }
 }

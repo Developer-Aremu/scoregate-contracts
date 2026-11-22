@@ -1,3 +1,4 @@
+pub mod wasm_analysis;
 use anyhow::{anyhow, bail, Result};
 use scoregate_score::CONFIG_DRIFT_MANIFEST_FIELDS;
 use serde::{Deserialize, Serialize};
