@@ -42,8 +42,13 @@ if [ "$NETWORK" = "mainnet" ]; then
   echo "  ║  MAINNET ROLLBACK — this action cannot be undone    ║"
   echo "  ╚══════════════════════════════════════════════════════╝"
   echo ""
-  read -rp "  Type 'rollback-mainnet' to confirm: " CONFIRM
-  [ "$CONFIRM" = "rollback-mainnet" ] || { echo "Aborted."; exit 1; }
+  if [ "$DRY_RUN" = true ]; then
+    # A dry run changes nothing, so it must not wait for input; say what a live run would ask.
+    echo "[dry-run] A live mainnet run stops here until 'rollback-mainnet' is typed; no prompt in a dry run."
+  else
+    read -rp "  Type 'rollback-mainnet' to confirm: " CONFIRM
+    [ "$CONFIRM" = "rollback-mainnet" ] || { echo "Aborted."; exit 1; }
+  fi
 fi
 
 # ── Validate previous WASM ────────────────────────────────────
@@ -91,8 +96,12 @@ log "   soroban contract invoke --id $TARGET_CONTRACT_ID --source $ADMIN_IDENTIT
 log "   Execute only after executable_after has passed."
 
 # ── Step 3: Execute the rollback ──────────────────────────────
-read -rp "  Execute the rollback upgrade now? (yes/no): " EXECUTE_CONFIRM
-[ "$EXECUTE_CONFIRM" = "yes" ] || { log "Rollback aborted by operator."; exit 0; }
+if [ "$DRY_RUN" = true ]; then
+  echo "[dry-run] A live run asks 'Execute the rollback upgrade now? (yes/no)' here and stops unless the answer is 'yes'; no prompt in a dry run."
+else
+  read -rp "  Execute the rollback upgrade now? (yes/no): " EXECUTE_CONFIRM
+  [ "$EXECUTE_CONFIRM" = "yes" ] || { log "Rollback aborted by operator."; exit 0; }
+fi
 
 log "Step 3: Executing rollback upgrade"
 if [ "$DRY_RUN" = true ]; then
