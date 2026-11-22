@@ -25,8 +25,57 @@ pub struct DriftReport {
     pub diffs: Vec<DriftDiffEntry>,
 }
 
+/// Report status when every mandatory field is present, valid and equal in both manifests.
+pub const STATUS_OK: &str = "ok";
+/// Report status when the manifests are complete but some values differ.
+pub const STATUS_DRIFTED: &str = "drifted";
+/// Report status when a manifest is missing a mandatory field or holds a null or wrongly typed value.
+/// Nothing was verified, so it must not be read as "no drift".
+pub const STATUS_INCOMPLETE: &str = "incomplete";
+
+/// Entry statuses that mean a manifest could not be checked, as opposed to a value that differs.
+const INCOMPLETE_STATUSES: &[&str] = &[
+    "missing_in_both_manifests",
+    "null_approved_value",
+    "null_observed_value",
+    "invalid_approved_value",
+    "invalid_observed_value",
+];
+
 fn known_fields() -> BTreeSet<&'static str> {
     CONFIG_DRIFT_MANIFEST_FIELDS.iter().copied().collect()
+}
+
+/// Whether `value` can be an observation of `field`: a boolean for `paused`, and for every other
+/// field an unsigned integer, written as a JSON number or a string of digits for values too large
+/// for a JSON number.
+fn is_valid_field_value(field: &str, value: &Value) -> bool {
+    if field == "paused" {
+        return value.is_boolean();
+    }
+    match value {
+        Value::Number(number) => number.is_u64(),
+        Value::String(text) => !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()),
+        _ => false,
+    }
+}
+
+/// An entry for `value` when it is null (the template placeholder) or the wrong type for `field`.
+fn value_problem(field: &str, value: Option<&Value>, side: &str) -> Option<DriftDiffEntry> {
+    let value = value?;
+    let status = if value.is_null() {
+        format!("null_{side}_value")
+    } else if !is_valid_field_value(field, value) {
+        format!("invalid_{side}_value")
+    } else {
+        return None;
+    };
+    Some(DriftDiffEntry {
+        field: field.into(),
+        status,
+        expected: if side == "approved" { Some(value.clone()) } else { None },
+        observed: if side == "observed" { Some(value.clone()) } else { None },
+    })
 }
 
 pub fn compare_config_manifests(approved: &Value, observed: &Value) -> Result<DriftReport> {
@@ -64,6 +113,9 @@ pub fn compare_config_manifests(approved: &Value, observed: &Value) -> Result<Dr
         let expected = approved.get(*field);
         let actual = observed.get(*field);
 
+        diffs.extend(value_problem(field, expected, "approved"));
+        diffs.extend(value_problem(field, actual, "observed"));
+
         match (expected, actual) {
             (Some(left), Some(right)) if left != right => diffs.push(DriftDiffEntry {
                 field: (*field).into(),
@@ -83,13 +135,28 @@ pub fn compare_config_manifests(approved: &Value, observed: &Value) -> Result<Dr
                 expected: None,
                 observed: Some(right.clone()),
             }),
+            // A field in neither manifest was not checked at all, so it cannot count as a match.
+            (None, None) => diffs.push(DriftDiffEntry {
+                field: (*field).into(),
+                status: "missing_in_both_manifests".into(),
+                expected: None,
+                observed: None,
+            }),
             _ => {}
         }
     }
 
     diffs.sort_by(|left, right| left.field.cmp(&right.field).then(left.status.cmp(&right.status)));
 
-    Ok(DriftReport { status: if diffs.is_empty() { "ok".into() } else { "drifted".into() }, diffs })
+    let status = if diffs.is_empty() {
+        STATUS_OK
+    } else if diffs.iter().any(|entry| INCOMPLETE_STATUSES.contains(&entry.status.as_str())) {
+        STATUS_INCOMPLETE
+    } else {
+        STATUS_DRIFTED
+    };
+
+    Ok(DriftReport { status: status.into(), diffs })
 }
 
 pub fn parse_manifest_json(raw: &str) -> Result<Value> {
