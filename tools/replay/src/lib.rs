@@ -1,8 +1,11 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use scoregate_score::CONFIG_DRIFT_MANIFEST_FIELDS;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
 
 // The analysis modules are part of the library, so `cargo build` and `cargo test -p replay --lib`
 // compile them and run their tests. A syntax error in either file now fails the ordinary build.
@@ -32,6 +35,13 @@ pub const STATUS_DRIFTED: &str = "drifted";
 /// Report status when a manifest is missing a mandatory field or holds a null or wrongly typed value.
 /// Nothing was verified, so it must not be read as "no drift".
 pub const STATUS_INCOMPLETE: &str = "incomplete";
+
+/// Exit status of `config-drift` when the manifests match completely.
+pub const EXIT_NO_DRIFT: i32 = 0;
+/// Exit status when drift, or an incomplete manifest, needs operator review.
+pub const EXIT_DRIFT: i32 = 1;
+/// Exit status for usage errors, unreadable files and malformed JSON.
+pub const EXIT_USAGE: i32 = 2;
 
 /// Entry statuses that mean a manifest could not be checked, as opposed to a value that differs.
 const INCOMPLETE_STATUSES: &[&str] = &[
@@ -173,4 +183,45 @@ pub fn recommended_manifest_template() -> Value {
         map.insert((*field).into(), Value::Null);
     }
     Value::Object(map)
+}
+
+/// Usage text for the `config-drift` subcommand.
+pub const CONFIG_DRIFT_USAGE: &str = "Usage: replay config-drift <approved.json> <observed.json>
+       replay config-drift --template
+       replay config-drift --help
+
+Compares an approved configuration manifest with an observed one and prints a JSON report.
+
+Exit status:
+  0  every mandatory field is present, valid and equal
+  1  drift, or an incomplete manifest, needs review
+  2  usage error, unreadable file or malformed JSON";
+
+/// Reads a manifest file, naming the path in every error.
+pub fn load_manifest(path: &Path) -> Result<Value> {
+    let raw = fs::read_to_string(path).with_context(|| format!("cannot read manifest {}", path.display()))?;
+    parse_manifest_json(&raw).with_context(|| format!("invalid manifest {}", path.display()))
+}
+
+/// Runs `replay config-drift <args>` and returns the exit status. `args` are the arguments after the
+/// subcommand name. Output goes to `out`; an error means a usage mistake or an unreadable manifest.
+pub fn run_config_drift(args: &[String], out: &mut impl Write) -> Result<i32> {
+    match args {
+        [flag] if flag == "--help" || flag == "-h" => {
+            writeln!(out, "{}", CONFIG_DRIFT_USAGE)?;
+            Ok(EXIT_NO_DRIFT)
+        }
+        [flag] if flag == "--template" => {
+            writeln!(out, "{}", serde_json::to_string_pretty(&recommended_manifest_template())?)?;
+            Ok(EXIT_NO_DRIFT)
+        }
+        [approved, observed] if !approved.starts_with('-') && !observed.starts_with('-') => {
+            let approved = load_manifest(Path::new(approved))?;
+            let observed = load_manifest(Path::new(observed))?;
+            let report = compare_config_manifests(&approved, &observed)?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            Ok(if report.status == STATUS_OK { EXIT_NO_DRIFT } else { EXIT_DRIFT })
+        }
+        _ => bail!("expected <approved.json> <observed.json>, --template or --help\n\n{}", CONFIG_DRIFT_USAGE),
+    }
 }
