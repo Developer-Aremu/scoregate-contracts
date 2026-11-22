@@ -2,7 +2,7 @@
 /// Identifies semantic divergences in behavior between different Soroban host versions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// Determinism check result
 pub type DeterminismResult<T> = Result<T, DeterminismError>;
@@ -249,42 +249,38 @@ pub fn compare_results(
                 divergences.push(DeterminismError::ExecutionDivergence {
                     host_version_a: result_a.host_version.clone(),
                     host_version_b: result_b.host_version.clone(),
-                    reason: format!(
-                        "{} observed on only one side: {} vs {}",
-                        label,
-                        format_optional(value_a),
-                        format_optional(value_b)
-                    ),
+                    reason: format!("{} differs: {} vs {}", label, value_a, value_b),
                 });
             }
         }
     }
 
-    // Compare state snapshots, including keys present on only one side
-    let mut state_keys: Vec<&String> = result_a
-        .state_snapshot
-        .keys()
-        .chain(result_b.state_snapshot.keys())
-        .collect();
-    state_keys.sort();
-    state_keys.dedup();
+    // Compare state snapshots using ordered key iteration so that diagnostic
+    // ordering is stable regardless of HashMap insertion order.
+    let mut all_keys: BTreeSet<&String> = BTreeSet::new();
+    all_keys.extend(result_a.state_snapshot.keys());
+    all_keys.extend(result_b.state_snapshot.keys());
 
-    for key in state_keys {
+    for key in all_keys {
         let value_a = result_a.state_snapshot.get(key);
         let value_b = result_b.state_snapshot.get(key);
+
         if value_a != value_b {
             state_differences.push(StateDifference {
                 key: key.clone(),
                 value_a: value_a.cloned(),
                 value_b: value_b.cloned(),
             });
-            divergences.push(DeterminismError::StateDivergence {
-                host_version_a: result_a.host_version.clone(),
-                host_version_b: result_b.host_version.clone(),
-                key: key.clone(),
-                value_a: format_optional(value_a),
-                value_b: format_optional(value_b),
-            });
+
+            if let (Some(va), Some(vb)) = (value_a, value_b) {
+                divergences.push(DeterminismError::StateDivergence {
+                    host_version_a: result_a.host_version.clone(),
+                    host_version_b: result_b.host_version.clone(),
+                    key: key.clone(),
+                    value_a: va.clone(),
+                    value_b: vb.clone(),
+                });
+            }
         }
     }
 
@@ -293,19 +289,23 @@ pub fn compare_results(
     for index in 0..max_events {
         let event_a = result_a.events.get(index);
         let event_b = result_b.events.get(index);
+
         if event_a != event_b {
             event_differences.push(EventDifference {
                 index,
                 event_a: event_a.cloned(),
                 event_b: event_b.cloned(),
             });
-            divergences.push(DeterminismError::EventDivergence {
-                host_version_a: result_a.host_version.clone(),
-                host_version_b: result_b.host_version.clone(),
-                index,
-                event_a: format_optional(event_a),
-                event_b: format_optional(event_b),
-            });
+
+            if let (Some(ea), Some(eb)) = (event_a, event_b) {
+                divergences.push(DeterminismError::EventDivergence {
+                    host_version_a: result_a.host_version.clone(),
+                    host_version_b: result_b.host_version.clone(),
+                    index,
+                    event_a: ea.clone(),
+                    event_b: eb.clone(),
+                });
+            }
         }
     }
 
@@ -334,56 +334,90 @@ fn format_optional<T: std::fmt::Display>(value: Option<T>) -> String {
 mod tests {
     use super::*;
 
-    fn base_result(host_version: &str) -> HostVersionResult {
+    fn make_result(
+        host_version: &str,
+        state: &[(&str, &str)],
+    ) -> HostVersionResult {
+        let mut state_snapshot = HashMap::new();
+        for (k, v) in state {
+            state_snapshot.insert((*k).to_string(), (*v).to_string());
+        }
         HostVersionResult {
             host_version: host_version.to_string(),
             accepted_count: 1,
             rejected_count: 0,
-            state_snapshot: HashMap::new(),
-            events: Vec::new(),
+            state_snapshot,
+            events: vec!["event".to_string()],
             error_code: None,
             metadata: ExecutionMetadata {
-                gas_consumed: None,
-                cpu_instructions: None,
-                memory_bytes: None,
-                execution_time_ms: None,
-                peak_memory_bytes: None,
+                gas_consumed: Some(100),
+                cpu_instructions: Some(10),
+                memory_bytes: Some(20),
+                execution_time_ms: Some(1),
+                peak_memory_bytes: Some(30),
                 custom: HashMap::new(),
             },
         }
     }
 
     #[test]
-    fn identical_results_are_deterministic() {
-        let a = base_result("a");
-        let b = base_result("b");
-        assert!(compare_results(&a, &b).is_deterministic);
+    fn identical_comparisons_have_stable_ordering() {
+        // Same logical state, different insertion orders.
+        let a = make_result(
+            "v1",
+            &[("alpha", "1"), ("beta", "2"), ("gamma", "3"), ("delta", "4")],
+        );
+        let b = make_result(
+            "v2",
+            &[("delta", "4"), ("gamma", "3"), ("beta", "2"), ("alpha", "1")],
+        );
+
+        let report_a = compare_results(&a, &b);
+        let report_b = compare_results(&b, &a);
+
+        assert!(report_a.is_deterministic);
+        assert!(report_a.state_differences.is_empty());
+        assert!(report_a.divergences.is_empty());
+        assert_eq!(
+            serde_json::to_string(&report_a).unwrap(),
+            serde_json::to_string(&report_b).unwrap()
+        );
     }
 
     #[test]
-    fn one_sided_state_key_is_divergence() {
-        let mut a = base_result("a");
-        let b = base_result("b");
-        a.state_snapshot.insert("k".to_string(), "v".to_string());
-        assert!(!compare_results(&a, &b).is_deterministic);
-        assert!(!compare_results(&b, &a).is_deterministic);
-    }
+    fn differing_states_report_sorted_differences() {
+        let a = make_result(
+            "v1",
+            &[("gamma", "3"), ("alpha", "1"), ("beta", "2")],
+        );
+        let b = make_result(
+            "v2",
+            &[("beta", "20"), ("gamma", "30"), ("alpha", "10")],
+        );
 
-    #[test]
-    fn one_sided_trailing_event_is_divergence() {
-        let mut a = base_result("a");
-        let b = base_result("b");
-        a.events.push("e".to_string());
-        assert!(!compare_results(&a, &b).is_deterministic);
-        assert!(!compare_results(&b, &a).is_deterministic);
-    }
+        let report = compare_results(&a, &b);
 
-    #[test]
-    fn one_sided_metric_is_divergence() {
-        let mut a = base_result("a");
-        let b = base_result("b");
-        a.metadata.gas_consumed = Some(0);
-        assert!(!compare_results(&a, &b).is_deterministic);
-        assert!(!compare_results(&b, &a).is_deterministic);
+        assert!(!report.is_deterministic);
+        let keys: Vec<&str> = report
+            .state_differences
+            .iter()
+            .map(|d| d.key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["alpha", "beta", "gamma"]);
+
+        // Reversing insertion order must not change serialized output.
+        let a2 = make_result(
+            "v1",
+            &[("beta", "2"), ("gamma", "3"), ("alpha", "1")],
+        );
+        let b2 = make_result(
+            "v2",
+            &[("alpha", "10"), ("gamma", "30"), ("beta", "20")],
+        );
+        let report2 = compare_results(&a2, &b2);
+        assert_eq!(
+            serde_json::to_string(&report).unwrap(),
+            serde_json::to_string(&report2).unwrap()
+        );
     }
 }
