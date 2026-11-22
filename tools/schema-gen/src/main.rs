@@ -89,9 +89,13 @@ fn main() -> Result<()> {
     };
 
     let dir = PathBuf::from(&out_dir);
-    std::fs::create_dir_all(&dir)?;
+    // Check mode is strictly read-only: never create the output directory.
+    if !check {
+        std::fs::create_dir_all(&dir)?;
+    }
 
-    // Helper: render JSON + TS + Python for one struct and write them if changed.
+    // Helper: render JSON + TS + Python for one struct and either write them
+    // (regeneration) or compare them against the committed artifacts (check).
     let mut any_changed = false;
 
     let write_type = |schema_file: &str,
@@ -99,6 +103,7 @@ fn main() -> Result<()> {
                       py_file: &str,
                       struct_: &soroban_sdk::xdr::ScSpecUdtStructV0,
                       dir: &Path,
+                      check: bool,
                       changed: &mut bool|
      -> Result<()> {
         let schema_text = {
@@ -108,19 +113,28 @@ fn main() -> Result<()> {
         };
         let ts_text = struct_to_typescript(struct_);
         let py_text = struct_to_python(struct_);
-        *changed |= write_if_changed(&dir.join(schema_file), &schema_text)?;
-        *changed |= write_if_changed(&dir.join(ts_file), &ts_text)?;
-        *changed |= write_if_changed(&dir.join(py_file), &py_text)?;
+        *changed |= sync_artifact(&dir.join(schema_file), &schema_text, check)?;
+        *changed |= sync_artifact(&dir.join(ts_file), &ts_text, check)?;
+        *changed |= sync_artifact(&dir.join(py_file), &py_text, check)?;
         Ok(())
     };
 
-    write_type(SCHEMA_FILE, TYPESCRIPT_FILE, PYTHON_FILE, &risk_score, &dir, &mut any_changed)?;
+    write_type(
+        SCHEMA_FILE,
+        TYPESCRIPT_FILE,
+        PYTHON_FILE,
+        &risk_score,
+        &dir,
+        check,
+        &mut any_changed,
+    )?;
     write_type(
         AGGREGATE_RISK_SCORE_SCHEMA_FILE,
         AGGREGATE_RISK_SCORE_TYPESCRIPT_FILE,
         AGGREGATE_RISK_SCORE_PYTHON_FILE,
         &aggregate,
         &dir,
+        check,
         &mut any_changed,
     )?;
     write_type(
@@ -129,6 +143,7 @@ fn main() -> Result<()> {
         SCORE_SUBMISSION_PYTHON_FILE,
         &submission,
         &dir,
+        check,
         &mut any_changed,
     )?;
     write_type(
@@ -137,6 +152,7 @@ fn main() -> Result<()> {
         BATCH_ATTESTATION_PYTHON_FILE,
         &attestation,
         &dir,
+        check,
         &mut any_changed,
     )?;
 
@@ -271,6 +287,7 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<bool> {
             Ok(true)
         }
     }
+    Ok(true)
 }
 
 fn print_usage() {
