@@ -24,3 +24,8 @@ jobs:
       - name: Run replay binary
         run: |
           cargo run -p replay --manifest-path tools/replay/Cargo.toml --quiet
+      - name: Verify deterministic event evidence hashes
+        run: |
+          cargo run -p replay --manifest-path tools/replay/Cargo.toml --quiet > /tmp/replay-run-1.txt
+          cargo run -p replay --manifest-path tools/replay/Cargo.toml --quiet > /tmp/replay-run-2.txt
+          diff /tmp/replay-run-1.txt /tmp/replay-run-2.txt
