@@ -41,7 +41,11 @@ run() {
 log() {
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  echo "[$ts] $*" | tee -a "$LOG_FILE"
+  if [ "$DRY_RUN" = true ]; then
+    echo "[$ts] $*"
+  else
+    echo "[$ts] $*" | tee -a "$LOG_FILE"
+  fi
 }
 
 # ── Validate network ──────────────────────────────────────────────────
@@ -62,7 +66,11 @@ run soroban contract optimize --wasm "$WASM_PATH"
 
 # ── Verify WASM ───────────────────────────────────────────────────────
 log "Computing WASM hash for canary verification"
-CANARY_WASM_HASH=$(sha256sum "$OPTIMIZED_WASM_PATH" | awk '{print $1}')
+if [ "$DRY_RUN" = true ]; then
+  CANARY_WASM_HASH="<DRY_RUN_WASM_HASH_PLACEHOLDER>"
+else
+  CANARY_WASM_HASH=$(sha256sum "$OPTIMIZED_WASM_PATH" | awk '{print $1}')
+fi
 log "Canary WASM SHA-256: $CANARY_WASM_HASH"
 
 # ── Deploy canary ─────────────────────────────────────────────────────
@@ -78,10 +86,17 @@ else
 fi
 
 log "Canary contract deployed: $CANARY_CONTRACT_ID"
-echo "$CANARY_CONTRACT_ID" > "$CONTRACT_ID_FILE"
+if [ "$DRY_RUN" != true ]; then
+  echo "$CANARY_CONTRACT_ID" > "$CONTRACT_ID_FILE"
+fi
 
 # ── Initialize canary ─────────────────────────────────────────────────
-ADMIN_ADDRESS=$(run soroban keys address "$ADMIN_IDENTITY" 2>/dev/null || echo "<ADMIN_ADDRESS>")
+if [ "$DRY_RUN" = true ]; then
+  ADMIN_ADDRESS="<ADMIN_ADDRESS_PLACEHOLDER>"
+  echo "[dry-run] soroban keys address $ADMIN_IDENTITY"
+else
+  ADMIN_ADDRESS=$(soroban keys address "$ADMIN_IDENTITY" 2>/dev/null || echo "<ADMIN_ADDRESS>")
+fi
 
 log "Initializing canary contract (admin=$ADMIN_ADDRESS, service=$SERVICE_ADDRESS)"
 run soroban contract invoke \
@@ -97,12 +112,17 @@ run soroban contract invoke \
 log "Running canary verification suite"
 
 # Verify basic state
-CANARY_ADMIN=$(soroban contract invoke \
-  --id "$CANARY_CONTRACT_ID" \
-  --source "$ADMIN_IDENTITY" \
-  --network "$NETWORK" \
-  -- \
-  get_admin 2>/dev/null || echo "VERIFICATION_FAILED")
+if [ "$DRY_RUN" = true ]; then
+  echo "[dry-run] soroban contract invoke --id $CANARY_CONTRACT_ID --source $ADMIN_IDENTITY --network $NETWORK -- get_admin"
+  CANARY_ADMIN="<ADMIN_ADDRESS_PLACEHOLDER>"
+else
+  CANARY_ADMIN=$(soroban contract invoke \
+    --id "$CANARY_CONTRACT_ID" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" \
+    -- \
+    get_admin 2>/dev/null || echo "VERIFICATION_FAILED")
+fi
 
 if [ "$CANARY_ADMIN" = "VERIFICATION_FAILED" ]; then
   log "ERROR: Canary verification failed — get_admin returned an error."
@@ -110,32 +130,42 @@ if [ "$CANARY_ADMIN" = "VERIFICATION_FAILED" ]; then
 fi
 log "Canary admin verified: $CANARY_ADMIN"
 
-CANARY_VERSION=$(soroban contract invoke \
-  --id "$CANARY_CONTRACT_ID" \
-  --source "$ADMIN_IDENTITY" \
-  --network "$NETWORK" \
-  -- \
-  get_version 2>/dev/null || echo "0")
+if [ "$DRY_RUN" = true ]; then
+  echo "[dry-run] soroban contract invoke --id $CANARY_CONTRACT_ID --source $ADMIN_IDENTITY --network $NETWORK -- get_version"
+  CANARY_VERSION="1"
+else
+  CANARY_VERSION=$(soroban contract invoke \
+    --id "$CANARY_CONTRACT_ID" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" \
+    -- \
+    get_version 2>/dev/null || echo "0")
+fi
 log "Canary contract version: $CANARY_VERSION"
 
 # Submit a canary test score
 log "Submitting canary test score"
-CANARY_TEST_RESULT=$(soroban contract invoke \
-  --id "$CANARY_CONTRACT_ID" \
-  --source "$SERVICE_IDENTITY" \
-  --network "$NETWORK" \
-  -- \
-  submit_score \
-  --signers "[]" \
-  --wallet "$ADMIN_ADDRESS" \
-  --asset-pair CAN_TEST \
-  --score 50 \
-  --benford-flag false \
-  --ml-flag false \
-  --timestamp "$(date +%s)" \
-  --confidence 80 \
-  --model-version 1 \
-  --attestation-input null 2>&1 || echo "CANARY_SUBMIT_FAILED")
+if [ "$DRY_RUN" = true ]; then
+  echo "[dry-run] soroban contract invoke --id $CANARY_CONTRACT_ID --source $ADMIN_IDENTITY --network $NETWORK -- submit_score --signers [] --wallet $ADMIN_ADDRESS --asset-pair CAN_TEST --score 50 --benford-flag false --ml-flag false --timestamp $(date +%s) --confidence 80 --model-version 1 --attestation-input null"
+  CANARY_TEST_RESULT="success"
+else
+  CANARY_TEST_RESULT=$(soroban contract invoke \
+    --id "$CANARY_CONTRACT_ID" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" \
+    -- \
+    submit_score \
+    --signers "[]" \
+    --wallet "$ADMIN_ADDRESS" \
+    --asset-pair CAN_TEST \
+    --score 50 \
+    --benford-flag false \
+    --ml-flag false \
+    --timestamp "$(date +%s)" \
+    --confidence 80 \
+    --model-version 1 \
+    --attestation-input null 2>&1 || echo "CANARY_SUBMIT_FAILED")
+fi
 
 if echo "$CANARY_TEST_RESULT" | grep -q "CANARY_SUBMIT_FAILED\|Error"; then
   log "ERROR: Canary test score submission failed: $CANARY_TEST_RESULT"
@@ -146,14 +176,19 @@ fi
 
 # Verify the canary score
 log "Verifying canary score"
-CANARY_SCORE=$(soroban contract invoke \
-  --id "$CANARY_CONTRACT_ID" \
-  --source "$ADMIN_IDENTITY" \
-  --network "$NETWORK" \
-  -- \
-  get_score \
-  --wallet "$ADMIN_ADDRESS" \
-  --asset-pair CAN_TEST 2>/dev/null || echo "SCORE_NOT_FOUND")
+if [ "$DRY_RUN" = true ]; then
+  echo "[dry-run] soroban contract invoke --id $CANARY_CONTRACT_ID --source $ADMIN_IDENTITY --network $NETWORK -- get_score --wallet $ADMIN_ADDRESS --asset-pair CAN_TEST"
+  CANARY_SCORE="50"
+else
+  CANARY_SCORE=$(soroban contract invoke \
+    --id "$CANARY_CONTRACT_ID" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" \
+    -- \
+    get_score \
+    --wallet "$ADMIN_ADDRESS" \
+    --asset-pair CAN_TEST 2>/dev/null || echo "SCORE_NOT_FOUND")
+fi
 
 log "Canary test score result: $CANARY_SCORE"
 if [ "$CANARY_SCORE" = "SCORE_NOT_FOUND" ]; then
@@ -176,7 +211,9 @@ log "WASM Hash:  $CANARY_WASM_HASH"
 log "Log file:   $LOG_FILE"
 log "────────────────────────────────"
 echo ""
-log "Canary deployment ID saved to: $CONTRACT_ID_FILE"
+if [ "$DRY_RUN" != true ]; then
+  log "Canary deployment ID saved to: $CONTRACT_ID_FILE"
+fi
 log "Review the canary results before proceeding to full production deployment."
 log "To promote: ./deploy.sh $NETWORK $ADMIN_IDENTITY $SERVICE_ADDRESS"
 echo ""
