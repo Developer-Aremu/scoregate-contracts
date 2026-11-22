@@ -4236,10 +4236,13 @@ impl ScoreGateScoreContract {
 
     /// Sets the correlation coefficient between two asset pairs for use in
     /// portfolio VaR calculations. `corr` is scaled ×10 000 (e.g. `5000`
-    /// represents ρ = 0.5). Valid range: [-10 000, 10 000]. Admin only.
+    /// represents ρ = 0.5). Valid range: [-10 000, 10 000], both ends included. Admin only.
     ///
     /// # Errors
     /// - [`Error::NotInitialized`] if `initialize` has not been called.
+    /// - [`Error::InvalidCorrelation`] if `corr` is outside
+    ///   [`constants::MIN_PAIR_CORRELATION`]..=[`constants::MAX_PAIR_CORRELATION`]. Nothing is
+    ///   stored, so the previous coefficient stays in force.
     pub fn set_pair_correlation(
         env: Env,
         pair_a: Symbol,
@@ -4250,6 +4253,9 @@ impl ScoreGateScoreContract {
             return Err(Error::NotInitialized);
         }
         storage::get_admin(&env).require_auth();
+        if !(constants::MIN_PAIR_CORRELATION..=constants::MAX_PAIR_CORRELATION).contains(&corr) {
+            return Err(Error::InvalidCorrelation);
+        }
         storage::set_pair_correlation(&env, &pair_a, &pair_b, corr);
         #[cfg(any(test, feature = "testutils"))]
         invariants::invariant_check(&env);

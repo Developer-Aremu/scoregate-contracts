@@ -158,6 +158,7 @@ Soroban contract errors are returned as `u32` discriminant values. When a transa
 | Code | Name | Description | When returned | Client action |
 |-----:|------|-------------|---------------|---------------|
 | 4 | `BelowScoreFloor` | Alias for `InvalidScore`. Score is below the configured floor for a high-risk wallet | `submit_score` (hard fail) or `submit_scores_batch` (per-entry rejection) when the wallet's historical peak is at/above the high-water mark and the new score is below the floor value | The submission was blocked to prevent score-zeroing of a known high-risk wallet. If this is a legitimate re-scoring, the admin can call `override_score_floor` for a one-shot exception. |
+| 16 | `InvalidCorrelation` | Alias for `InvalidThreshold`. Static pair correlation is outside its domain | `set_pair_correlation` with `corr` below `-10_000` or above `10_000` | Use a coefficient scaled ×10 000 in `[-10_000, 10_000]`; the stored value is unchanged after a rejection. |
 | 16 | `InvalidScoreFloorPolicy` | Alias for `InvalidThreshold`. Floor policy parameters are invalid | `set_score_floor_policy` when `high_water_mark` is outside `[50, 100]`, or `floor_value >= high_water_mark` | Use `high_water_mark` in `[50, 100]` and `floor_value` strictly below it. |
 
 ### Hysteresis layer

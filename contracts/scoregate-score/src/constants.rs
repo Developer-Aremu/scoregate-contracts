@@ -126,6 +126,11 @@ pub const DEFAULT_SCORE_FLOOR_MIN: u32 = 20;
 pub const MIN_SCORE_FLOOR_HWM: u32 = 50;
 pub const MAX_SCORE_FLOOR_HWM: u32 = 100;
 pub const MAX_HYSTERESIS_MARGIN: u32 = 50;
+
+/// Bounds of a static pair correlation coefficient, scaled ×10 000 (so `-10_000` is ρ = -1 and
+/// `10_000` is ρ = 1). Both bounds are valid values.
+pub const MIN_PAIR_CORRELATION: i32 = -10_000;
+pub const MAX_PAIR_CORRELATION: i32 = 10_000;
 pub const BAND_STATE_TTL_THRESHOLD: u32 = 518_400;
 pub const BAND_STATE_TTL_EXTEND_TO: u32 = 777_600;
 pub const EMBARGO_TTL_THRESHOLD: u32 = 1_555_200;
