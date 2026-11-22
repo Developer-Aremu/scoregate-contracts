@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
+// The analysis modules are part of the library, so `cargo build` and `cargo test -p replay --lib`
+// compile them and run their tests. A syntax error in either file now fails the ordinary build.
+pub mod determinism;
+pub mod wasm_analysis;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriftDiffEntry {
     pub field: String,

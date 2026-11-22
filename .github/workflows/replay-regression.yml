@@ -21,6 +21,9 @@ jobs:
       - name: Build replay crate
         run: |
           cargo build -p replay --verbose
+      - name: Check the analysis tests are listed
+        run: |
+          bash scripts/check-replay-test-list.sh
       - name: Run replay binary
         run: |
           cargo run -p replay --manifest-path tools/replay/Cargo.toml --quiet

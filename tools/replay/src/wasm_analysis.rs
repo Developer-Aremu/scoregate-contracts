@@ -1,6 +1,6 @@
-/// WASM size attribution by module and feature.
-/// Breaks down WebAssembly binary growth by contract module or feature area
-/// to identify and review performance regressions during releases.
+//! WASM size attribution by module and feature.
+//! Breaks down WebAssembly binary growth by contract module or feature area
+//! to identify and review performance regressions during releases.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -104,8 +104,8 @@ pub struct SizeRegression {
     pub severity: RegressionSeverity,
 }
 
-/// Regression severity classification
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+/// Regression severity classification, ordered from least to most severe
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum RegressionSeverity {
     /// Increase < 1% (negligible)
@@ -324,6 +324,13 @@ mod tests {
     }
 
     #[test]
+    fn test_severity_ordering_ranks_severe_highest() {
+        assert!(RegressionSeverity::Severe > RegressionSeverity::Moderate);
+        assert!(RegressionSeverity::Moderate > RegressionSeverity::Minor);
+        assert!(RegressionSeverity::Minor > RegressionSeverity::Negligible);
+    }
+
+    #[test]
     fn test_size_regression_detection() {
         let mut prev = WasmBinaryAnalysis::new(1000000);
         prev.add_module("score", 500000, SizeCategory::Core);
@@ -385,6 +392,9 @@ mod tests {
         assert_eq!(compute_static_memory(&segments), 66536);
         assert_eq!(static_memory_pages(compute_static_memory(&segments)), 2);
     }
+
+    #[test]
+    fn test_size_decrease_is_not_a_regression() {
         let mut prev = WasmBinaryAnalysis::new(1000000);
         prev.add_module("score", 500000, SizeCategory::Core);
 
